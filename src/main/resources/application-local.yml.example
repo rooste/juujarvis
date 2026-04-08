@@ -1,0 +1,6 @@
+# Copy this file to application-local.yml and fill in your secrets.
+# application-local.yml is in .gitignore and will NOT be committed.
+
+juujarvis:
+  anthropic:
+    api-key: sk-ant-your-key-here
