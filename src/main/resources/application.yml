@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: juujarvis
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.juujarvis: DEBUG
