@@ -29,9 +29,10 @@ class ConfluenceService(
         .defaultHeader(HttpHeaders.ACCEPT, "application/json")
         .build()
 
-    fun search(query: String, limit: Int = 5): List<SearchResult> {
-        log.info("Searching Confluence: '{}'", query)
-        val cql = "type=page AND text~\"$query\""
+    fun search(query: String, spaceKey: String? = null, limit: Int = 10): List<SearchResult> {
+        log.info("Searching Confluence: '{}' in space={}", query, spaceKey ?: "all")
+        val spaceCql = if (spaceKey != null) " AND space=\"$spaceKey\"" else ""
+        val cql = "type=page AND (title~\"$query\" OR text~\"$query\")$spaceCql"
         val response = restClient.get()
             .uri("/wiki/rest/api/content/search?cql={cql}&limit={limit}&expand=excerpt", cql, limit)
             .retrieve()
@@ -43,6 +44,41 @@ class ConfluenceService(
                 id = node["id"].asText(),
                 title = node["title"].asText(),
                 excerpt = node["excerpt"]?.asText()?.replace(Regex("<[^>]*>"), "") ?: "",
+                url = "$baseUrl/wiki${node["_links"]?.get("webui")?.asText() ?: ""}"
+            )
+        } ?: emptyList()
+    }
+
+    fun listSpaces(): List<SpaceInfo> {
+        log.info("Listing Confluence spaces")
+        val response = restClient.get()
+            .uri("/wiki/rest/api/space?type=global&limit=25")
+            .retrieve()
+            .body(JsonNode::class.java)
+            ?: return emptyList()
+
+        return response["results"]?.map { node ->
+            SpaceInfo(
+                key = node["key"].asText(),
+                name = node["name"].asText()
+            )
+        } ?: emptyList()
+    }
+
+    fun listPagesInSpace(spaceKey: String, limit: Int = 25): List<SearchResult> {
+        log.info("Listing pages in space: {}", spaceKey)
+        val cql = "type=page AND space=\"$spaceKey\""
+        val response = restClient.get()
+            .uri("/wiki/rest/api/content/search?cql={cql}&limit={limit}", cql, limit)
+            .retrieve()
+            .body(JsonNode::class.java)
+            ?: return emptyList()
+
+        return response["results"]?.map { node ->
+            SearchResult(
+                id = node["id"].asText(),
+                title = node["title"].asText(),
+                excerpt = "",
                 url = "$baseUrl/wiki${node["_links"]?.get("webui")?.asText() ?: ""}"
             )
         } ?: emptyList()
@@ -70,6 +106,7 @@ class ConfluenceService(
         )
     }
 
+    data class SpaceInfo(val key: String, val name: String)
     data class SearchResult(val id: String, val title: String, val excerpt: String, val url: String)
     data class PageContent(val id: String, val title: String, val content: String, val url: String)
 }
