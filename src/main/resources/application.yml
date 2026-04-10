@@ -9,6 +9,11 @@ juujarvis:
   anthropic:
     api-key: ${ANTHROPIC_API_KEY:}
     model: claude-sonnet-4-20250514
+  confluence:
+    base-url: ${CONFLUENCE_BASE_URL:}
+    email: ${CONFLUENCE_EMAIL:}
+    api-token: ${CONFLUENCE_API_TOKEN:}
+  db-path: juujarvis.db
 
 logging:
   level:

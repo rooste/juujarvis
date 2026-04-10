@@ -11,6 +11,7 @@ import com.juujarvis.tool.ToolRegistry
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
+import java.time.Instant
 
 @Service
 class AssistantService(
@@ -19,6 +20,7 @@ class AssistantService(
     private val webSocketService: WebSocketService,
     private val messagingService: MessagingService,
     private val userService: UserService,
+    private val conversationStore: ConversationStore,
     @Value("\${juujarvis.anthropic.model:claude-sonnet-4-20250514}")
     private val modelId: String
 ) {
@@ -28,11 +30,15 @@ class AssistantService(
     companion object {
         private const val MAX_TOOL_LOOPS = 10
 
-        private const val BASE_PROMPT = """You are Juujarvis, an AI family assistant. You help the family stay organized by managing their calendar, sending messages between family members, and providing helpful reminders.
+        private const val BASE_PROMPT = """You are Juujarvis, an AI family assistant running on the family Mac Mini.
+
+Your name honors the Juujärvi heritage. Juujärvi is a lake in Kemijärvi, Finnish Lapland, nestled along the Kemijoki River. When the Juujärvi family emigrated to the United States about a hundred years ago, they shortened their name to Jarv. Your name playfully reunites both halves — the Finnish roots and the American branch — while nodding to a certain famous AI butler.
+
+You help the family stay organized by managing their calendar, sending messages between family members, and providing helpful reminders.
 
 You have access to tools for managing the calendar and sending messages. Use them when the user asks you to create events, check the schedule, remind family members, or contact someone.
 
-Be warm, helpful, and concise. You're part of the family — think of yourself as a helpful household assistant.
+Be warm, helpful, and concise. You're part of the family — think of yourself as a helpful household assistant who knows and cherishes the family's Finnish-American heritage.
 
 When asked to notify or remind family members, use the send_message tool.
 Your reply will automatically be delivered to the conversation this message came from. Only use send_message if you need to reach someone in a DIFFERENT conversation."""
@@ -43,6 +49,14 @@ Your reply will automatically be delivered to the conversation this message came
         val senderName = senderUser?.name ?: message.userId
         log.info("Processing message from '{}' ({}): {}", senderName, message.userId, message.text)
 
+        val conversationId = when {
+            message.conversation != null -> message.conversation.chatId
+            else -> "web-ui-${message.userId}"
+        }
+
+        // Save the incoming user message
+        conversationStore.saveTurn(conversationId, "user", message.text, senderName, message.channel.name, message.timestamp)
+
         val systemPrompt = buildSystemPrompt(message, senderName)
 
         val userText = if (message.channel == ChannelType.IMESSAGE) {
@@ -51,7 +65,29 @@ Your reply will automatically be delivered to the conversation this message came
             message.text
         }
 
-        val conversationMessages = mutableListOf<MessageParam>(
+        // Load conversation history and build message list
+        val recentTurns = conversationStore.loadRecentTurns(conversationId, limit = 20)
+        val conversationMessages = mutableListOf<MessageParam>()
+
+        // Add historical turns (excluding the current message which is the last one)
+        val history = sanitizeHistory(recentTurns.dropLast(1))
+        history.forEach { turn ->
+            val role = if (turn.role == "user") MessageParam.Role.USER else MessageParam.Role.ASSISTANT
+            val text = if (turn.role == "user" && message.channel == ChannelType.IMESSAGE) {
+                "[${turn.senderName ?: "unknown"}]: ${turn.content}"
+            } else {
+                turn.content
+            }
+            conversationMessages.add(
+                MessageParam.builder()
+                    .role(role)
+                    .content(MessageParam.Content.ofString(text))
+                    .build()
+            )
+        }
+
+        // Add the current message
+        conversationMessages.add(
             MessageParam.builder()
                 .role(MessageParam.Role.USER)
                 .content(MessageParam.Content.ofString(userText))
@@ -101,7 +137,7 @@ Your reply will automatically be delivered to the conversation this message came
                 }
             } catch (e: Exception) {
                 log.error("Error streaming from Claude", e)
-                deliverResponse(message, "Sorry, I encountered an error: ${e.message}")
+                deliverAndSave(message, conversationId, "Sorry, I encountered an error: ${e.message}")
                 return
             }
 
@@ -113,7 +149,7 @@ Your reply will automatically be delivered to the conversation this message came
 
             if (toolUseBlocks.isEmpty()) {
                 log.info("Response complete (no tool use): {} chars", textBuffer.length)
-                deliverResponse(message, textBuffer.toString())
+                deliverAndSave(message, conversationId, textBuffer.toString())
                 return
             }
 
@@ -187,7 +223,7 @@ Your reply will automatically be delivered to the conversation this message came
         }
 
         log.warn("Max tool loops ({}) reached", MAX_TOOL_LOOPS)
-        deliverResponse(message, textBuffer.toString())
+        deliverAndSave(message, conversationId, textBuffer.toString())
     }
 
     private fun buildSystemPrompt(message: IncomingMessage, senderName: String): String {
@@ -214,13 +250,61 @@ Your reply will automatically be delivered to the conversation this message came
                 "This is a 1-on-1 conversation with $senderName."
         }
 
+        val summaries = conversationStore.loadRecentSummaries(days = 7)
+        val summaryContext = if (summaries.isNotEmpty()) {
+            val lines = summaries.joinToString("\n\n") { s ->
+                "=== ${s.summaryDate} ===\n${s.summary}" +
+                    (s.followUps?.let { "\nFollow-ups: $it" } ?: "")
+            }
+            "\n\nRecent daily summaries (for long-term context):\n$lines"
+        } else ""
+
+        // Load profiles for participants in this conversation
+        val relevantProfiles = buildRelevantProfiles(message)
+
         return """$BASE_PROMPT
 
 Family members:
-$familyMembers
+$familyMembers$relevantProfiles
 
 Current conversation:
-$conversationContext"""
+$conversationContext$summaryContext"""
+    }
+
+    private fun buildRelevantProfiles(message: IncomingMessage): String {
+        val personIds = mutableSetOf<String>()
+
+        // Add the sender
+        val senderUser = userService.findByHandle(message.userId)
+        if (senderUser != null) personIds.add(senderUser.name.lowercase())
+
+        // Add all participants in the conversation
+        message.conversation?.participants?.forEach { handle ->
+            val user = userService.findByHandle(handle)
+            if (user != null) personIds.add(user.name.lowercase())
+        }
+
+        // For web UI, add the user
+        if (message.channel != ChannelType.IMESSAGE) {
+            personIds.add(message.userId.lowercase())
+        }
+
+        if (personIds.isEmpty()) return ""
+
+        val profiles = personIds.mapNotNull { conversationStore.loadPersonProfile(it) }
+        if (profiles.isEmpty()) return ""
+
+        val lines = profiles.joinToString("\n\n") { p ->
+            "${p.personId}:\n${p.profile}"
+        }
+        return "\n\nWhat you know about the people in this conversation:\n$lines"
+    }
+
+    private fun deliverAndSave(message: IncomingMessage, conversationId: String, text: String) {
+        deliverResponse(message, text)
+        if (text.isNotBlank()) {
+            conversationStore.saveTurn(conversationId, "assistant", text, "Juujarvis", message.channel.name, Instant.now())
+        }
     }
 
     private fun deliverResponse(message: IncomingMessage, text: String) {
@@ -239,6 +323,28 @@ $conversationContext"""
             webSocketService.sendStreamChunk(message.userId, text)
             webSocketService.sendStreamEnd(message.userId)
         }
+    }
+
+    /**
+     * Ensure USER/ASSISTANT messages alternate as required by the Anthropic API.
+     * Drop turns that would break alternation; ensure list starts with USER.
+     */
+    private fun sanitizeHistory(turns: List<ConversationTurn>): List<ConversationTurn> {
+        if (turns.isEmpty()) return turns
+        val result = mutableListOf<ConversationTurn>()
+        for (turn in turns) {
+            if (result.isEmpty()) {
+                if (turn.role == "user") result.add(turn)
+            } else {
+                if (turn.role != result.last().role) {
+                    result.add(turn)
+                }
+                // skip consecutive same-role turns (keep the later one would break order, so skip)
+            }
+        }
+        // Must end with user (since we're about to add the current user message)
+        // If it ends with assistant, that's fine — the current user message follows
+        return result
     }
 
     @Suppress("UNCHECKED_CAST")
