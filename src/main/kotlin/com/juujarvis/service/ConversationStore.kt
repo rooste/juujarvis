@@ -33,6 +33,21 @@ data class DailySummary(
     val createdAt: Instant
 )
 
+data class GroupChatInfo(
+    val conversationId: String,
+    val chatGuid: String,
+    val displayName: String?,
+    val members: List<String> = emptyList()
+)
+
+data class ScheduledReminder(
+    val id: Long,
+    val recipient: String,
+    val recipientType: String,
+    val message: String,
+    val sendAt: Instant
+)
+
 @Component
 class ConversationStore(
     @Value("\${juujarvis.db-path:juujarvis.db}")
@@ -93,6 +108,18 @@ class ConversationStore(
                         FOREIGN KEY (user_id) REFERENCES family_user(id)
                     )
                 """.trimIndent())
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS scheduled_reminder (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        recipient TEXT NOT NULL,
+                        recipient_type TEXT NOT NULL DEFAULT 'user',
+                        message TEXT NOT NULL,
+                        send_at TEXT NOT NULL,
+                        sent INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    )
+                """.trimIndent())
+                s.execute("CREATE INDEX IF NOT EXISTS idx_reminder_send ON scheduled_reminder(send_at, sent)")
             }
         }
         log.info("Conversation store initialized at {}", dbPath)
@@ -326,6 +353,101 @@ class ConversationStore(
                 )
             }
             contacts
+        }
+    }
+
+    // ── Group chat discovery ──
+
+    fun loadRecentGroupChats(days: Int = 7): List<GroupChatInfo> {
+        val since = java.time.LocalDate.now(ZoneId.systemDefault()).minusDays(days.toLong())
+            .atStartOfDay(ZoneId.systemDefault()).toInstant()
+        return connection().use { conn ->
+            // Find group conversation IDs
+            val groupIds = mutableListOf<String>()
+            conn.prepareStatement("""
+                SELECT DISTINCT conversation_id FROM conversation_turn
+                WHERE timestamp >= ? AND conversation_id NOT LIKE 'web-ui-%'
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, since.toString())
+                val rs = stmt.executeQuery()
+                while (rs.next()) {
+                    val convId = rs.getString("conversation_id")
+                    if (convId.startsWith("chat") || convId.contains(";+;")) {
+                        groupIds += convId
+                    }
+                }
+            }
+
+            // For each group, find unique members (excluding Juujarvis)
+            groupIds.map { convId ->
+                val members = mutableListOf<String>()
+                conn.prepareStatement("""
+                    SELECT DISTINCT sender_name FROM conversation_turn
+                    WHERE conversation_id = ? AND sender_name IS NOT NULL AND sender_name != 'Juujarvis'
+                    ORDER BY sender_name
+                """.trimIndent()).use { stmt ->
+                    stmt.setString(1, convId)
+                    val rs = stmt.executeQuery()
+                    while (rs.next()) {
+                        members += rs.getString("sender_name")
+                    }
+                }
+                GroupChatInfo(
+                    conversationId = convId,
+                    chatGuid = convId,
+                    displayName = null,
+                    members = members
+                )
+            }
+        }
+    }
+
+    // ── Scheduled reminders ──
+
+    fun saveReminder(recipient: String, message: String, sendAt: Instant, recipientType: String = "user") {
+        connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT INTO scheduled_reminder (recipient, recipient_type, message, send_at, sent, created_at) VALUES (?, ?, ?, ?, 0, ?)"
+            ).use { stmt ->
+                stmt.setString(1, recipient)
+                stmt.setString(2, recipientType)
+                stmt.setString(3, message)
+                stmt.setString(4, sendAt.toString())
+                stmt.setString(5, Instant.now().toString())
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    fun loadDueReminders(): List<ScheduledReminder> {
+        val now = Instant.now().toString()
+        return connection().use { conn ->
+            conn.prepareStatement(
+                "SELECT id, recipient, recipient_type, message, send_at FROM scheduled_reminder WHERE sent = 0 AND send_at <= ? ORDER BY send_at ASC"
+            ).use { stmt ->
+                stmt.setString(1, now)
+                val rs = stmt.executeQuery()
+                val reminders = mutableListOf<ScheduledReminder>()
+                while (rs.next()) {
+                    reminders += ScheduledReminder(
+                        id = rs.getLong("id"),
+                        recipient = rs.getString("recipient"),
+                        recipientType = rs.getString("recipient_type"),
+                        message = rs.getString("message"),
+                        sendAt = Instant.parse(rs.getString("send_at"))
+                    )
+                }
+                reminders
+            }
+        }
+    }
+
+    fun markReminderSent(id: Long) {
+        connection().use { conn ->
+            conn.prepareStatement("UPDATE scheduled_reminder SET sent = 1 WHERE id = ?").use { stmt ->
+                stmt.setLong(1, id)
+                stmt.executeUpdate()
+            }
         }
     }
 

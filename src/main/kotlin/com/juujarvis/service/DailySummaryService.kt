@@ -2,6 +2,7 @@ package com.juujarvis.service
 
 import com.anthropic.client.AnthropicClient
 import com.anthropic.models.messages.*
+import com.juujarvis.messaging.MessagingService
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
@@ -13,6 +14,10 @@ import java.time.ZoneId
 class DailySummaryService(
     private val conversationStore: ConversationStore,
     private val anthropicClient: AnthropicClient,
+    private val messagingService: MessagingService,
+    private val userService: UserService,
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private val googleCalendarService: GoogleCalendarService?,
     @Value("\${juujarvis.anthropic.model:claude-sonnet-4-20250514}")
     private val modelId: String
 ) {
@@ -91,6 +96,145 @@ Keep it brief — this will be injected into future system prompts for context."
         // Step 2: Update person profiles
         if (participants.isNotEmpty()) {
             updatePersonProfiles(transcript, participants)
+        }
+
+        // Step 3: Calendar reminders
+        generateCalendarReminders()
+    }
+
+    private fun generateCalendarReminders() {
+        if (googleCalendarService == null) {
+            log.debug("Google Calendar not configured, skipping reminders")
+            return
+        }
+
+        log.info("Planning calendar reminders")
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+
+        try {
+            // Get next 2 days for immediate reminders
+            val upcomingEvents = googleCalendarService.getUpcomingEvents(2)
+            // Get rest of the week for big event early warnings
+            val weekEvents = googleCalendarService.getUpcomingEvents(7)
+
+            if (upcomingEvents.isEmpty() && weekEvents.isEmpty()) {
+                log.info("No upcoming calendar events, skipping reminders")
+                return
+            }
+
+            val upcomingFormatted = upcomingEvents.joinToString("\n") { e ->
+                val date = e.start.atZone(zone).toLocalDate()
+                val dayLabel = when (date) {
+                    today -> "Today"
+                    today.plusDays(1) -> "Tomorrow"
+                    else -> date.toString()
+                }
+                "$dayLabel: ${e.formatForDisplay(zone)}"
+            }
+
+            val laterThisWeek = weekEvents.filter {
+                val eventDate = it.start.atZone(zone).toLocalDate()
+                eventDate.isAfter(today.plusDays(1))
+            }
+            val laterFormatted = if (laterThisWeek.isNotEmpty()) {
+                "\n\nLater this week:\n" + laterThisWeek.joinToString("\n") { it.formatForDisplay(zone) }
+            } else ""
+
+            val familyMembers = userService.getAllUsers().joinToString(", ") { it.name }
+            val nowTime = java.time.LocalTime.now(zone).format(java.time.format.DateTimeFormatter.ofPattern("H:mm"))
+
+            // Find recent group chats for Claude to target
+            val recentGroups = conversationStore.loadRecentGroupChats(days = 7)
+            val groupContext = if (recentGroups.isNotEmpty()) {
+                "\n\nKnown group chats (use GROUP: chat_guid to send to a group):\n" +
+                    recentGroups.joinToString("\n") { g ->
+                        val label = g.displayName ?: g.conversationId
+                        val members = if (g.members.isNotEmpty()) " — members: ${g.members.joinToString(", ")}" else ""
+                        "- $label (guid: ${g.chatGuid})$members"
+                    }
+            } else ""
+
+            val params = MessageCreateParams.builder()
+                .model(Model.of(modelId))
+                .maxTokens(1024L)
+                .system("""You are Juujarvis, the family AI assistant, planning reminders for today.
+
+Current time: $nowTime. Review the upcoming calendar events and schedule reminders at appropriate times:
+- Morning events: remind at 7:00 AM
+- Afternoon events: remind at 7:00 AM (as part of morning digest) AND 1 hour before the event
+- Evening events: remind 2 hours before
+- All-day events: remind at 7:00 AM
+- Big events later this week (travel, parties, important appointments): remind at 7:00 AM today as a heads-up
+- Don't schedule reminders for events that have already passed
+- Don't schedule reminders in the past (earliest allowed: now)
+- Keep reminders warm, brief, and helpful
+- If multiple events for the same person at the same time, combine into one message
+- If an event involves the whole family or multiple people, send the reminder to a group chat instead of individuals
+- If an event description mentions specific attendees and there is a group chat whose members exactly match those attendees (no extra, no missing), prefer sending to that group chat
+
+Family members: $familyMembers$groupContext
+
+Output format — one line per scheduled reminder:
+For individual: REMIND: person_name | YYYY-MM-DDTHH:MM | message text
+For group chat: GROUP: chat_guid | YYYY-MM-DDTHH:MM | message text
+
+Example:
+REMIND: Dad | ${today}T07:00 | Good morning! You have a dentist appointment at 2pm today.
+REMIND: Dad | ${today}T13:00 | Heads up — dentist appointment in an hour!
+GROUP: iMessage;+;chat123456 | ${today}T07:00 | Good morning family! Reminder: dinner at Grandma's tonight at 6pm.
+
+If no reminders are needed, output: NO_REMINDERS""")
+                .addMessage(
+                    MessageParam.builder()
+                        .role(MessageParam.Role.USER)
+                        .content(MessageParam.Content.ofString("Today is $today. Here are the upcoming events:\n\n$upcomingFormatted$laterFormatted"))
+                        .build()
+                )
+                .build()
+
+            val response = anthropicClient.messages().create(params)
+            val reminderText = response.content()
+                .mapNotNull { block -> block.text().orElse(null)?.text() }
+                .joinToString("\n")
+
+            if (reminderText.contains("NO_REMINDERS")) {
+                log.info("No calendar reminders needed today")
+                return
+            }
+
+            // Parse REMIND: and GROUP: lines
+            val remindPattern = Regex("""REMIND:\s*(.+?)\s*\|\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})\s*\|\s*(.+)""")
+            val groupPattern = Regex("""GROUP:\s*(.+?)\s*\|\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})\s*\|\s*(.+)""")
+            var count = 0
+
+            remindPattern.findAll(reminderText).forEach { match ->
+                val name = match.groupValues[1].trim()
+                val sendAt = java.time.LocalDateTime.parse(match.groupValues[2]).atZone(zone).toInstant()
+                val message = match.groupValues[3].trim()
+
+                if (message.isNotBlank() && sendAt.isAfter(java.time.Instant.now().minusSeconds(60))) {
+                    conversationStore.saveReminder(name, message, sendAt, "user")
+                    log.info("Scheduled reminder for '{}' at {}: {}", name, sendAt, message.take(80))
+                    count++
+                }
+            }
+
+            groupPattern.findAll(reminderText).forEach { match ->
+                val chatGuid = match.groupValues[1].trim()
+                val sendAt = java.time.LocalDateTime.parse(match.groupValues[2]).atZone(zone).toInstant()
+                val message = match.groupValues[3].trim()
+
+                if (message.isNotBlank() && sendAt.isAfter(java.time.Instant.now().minusSeconds(60))) {
+                    conversationStore.saveReminder(chatGuid, message, sendAt, "group")
+                    log.info("Scheduled group reminder for '{}' at {}: {}", chatGuid, sendAt, message.take(80))
+                    count++
+                }
+            }
+
+            log.info("Scheduled {} calendar reminders", count)
+        } catch (e: Exception) {
+            log.error("Failed to generate calendar reminders: {}", e.message)
         }
     }
 

@@ -41,6 +41,11 @@ out/
 .env
 application-local.yml
 application-local.yaml
+secrets/
+
+# Runtime data
+juujarvis.db
+logs/
 
 # OS
 .DS_Store

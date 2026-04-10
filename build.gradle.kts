@@ -30,6 +30,11 @@ dependencies {
     // SQLite (for iMessage chat.db)
     implementation("org.xerial:sqlite-jdbc:3.45.1.0")
 
+    // Google Calendar API
+    implementation("com.google.api-client:google-api-client:2.7.2")
+    implementation("com.google.oauth-client:google-oauth-client-jetty:1.36.0")
+    implementation("com.google.apis:google-api-services-calendar:v3-rev20241101-2.0.0")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

@@ -274,7 +274,13 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
         // Load profiles for participants in this conversation
         val relevantProfiles = buildRelevantProfiles(message)
 
+        val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+
         return """$BASE_PROMPT
+
+Today's date: $today
+
+When creating calendar events, if a date appears to be in the past (e.g., a year that has already passed), assume the user means the next upcoming occurrence and adjust the year accordingly. Always confirm the date with the user if ambiguous.
 
 Family members:
 $familyMembers$relevantProfiles
