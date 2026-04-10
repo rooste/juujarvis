@@ -14,6 +14,7 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty("juujarvis.imessage.polling-enabled", havingValue = "true", matchIfMissing = true)
 class IMessagePoller(
     private val messageRouter: MessageRouter,
     private val webSocketService: WebSocketService

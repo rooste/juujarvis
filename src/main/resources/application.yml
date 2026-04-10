@@ -6,6 +6,8 @@ server:
   port: 8080
 
 juujarvis:
+  imessage:
+    polling-enabled: true
   anthropic:
     api-key: ${ANTHROPIC_API_KEY:}
     model: claude-sonnet-4-20250514

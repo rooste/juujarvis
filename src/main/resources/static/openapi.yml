@@ -1,0 +1,214 @@
+openapi: 3.0.3
+info:
+  title: Juujarvis Inbound Message API
+  description: |
+    Generic inbound message endpoint for external bridges.
+    Any message source (iMessage bridge, Signal bridge, email bridge, etc.)
+    posts a standardized payload to this API. Juujarvis handles routing,
+    conversation context, and AI processing.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local Mac Mini
+
+paths:
+  /api/inbound:
+    post:
+      summary: Receive an inbound message from an external bridge
+      description: |
+        Accepts a message from any channel bridge. The message is processed
+        asynchronously — the response confirms receipt, and the AI reply is
+        delivered back through the originating channel.
+
+        Audio attachments with a `transcription` field are appended to the
+        message text automatically.
+      operationId: receiveInboundMessage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundMessageRequest'
+            examples:
+              textMessage:
+                summary: Simple text message
+                value:
+                  channel: IMESSAGE
+                  sender: roose@iki.fi
+                  text: What's on the calendar today?
+              groupMessage:
+                summary: Message from a group chat
+                value:
+                  channel: IMESSAGE
+                  sender: roose@iki.fi
+                  text: Can you remind everyone about dinner?
+                  timestamp: "2026-04-10T03:00:00Z"
+                  conversation:
+                    chatId: chat679686843192233386
+                    chatGuid: "iMessage;+;chat679686843192233386"
+                    isGroup: true
+                    displayName: Family Chat
+                    participants:
+                      - roose@iki.fi
+                      - saija.taavettila@iki.fi
+              audioMessage:
+                summary: Audio message with transcription
+                value:
+                  channel: IMESSAGE
+                  sender: saija.taavettila@iki.fi
+                  text: ""
+                  conversation:
+                    chatId: chat679686843192233386
+                    chatGuid: "iMessage;+;chat679686843192233386"
+                    isGroup: false
+                    participants:
+                      - saija.taavettila@iki.fi
+                  attachments:
+                    - type: AUDIO
+                      mimeType: audio/x-caf
+                      transcription: Muista ostaa maitoa kaupasta
+              signalMessage:
+                summary: Message from Signal bridge
+                value:
+                  channel: SIGNAL
+                  sender: "+15551234567"
+                  text: Hey Juujarvis, what time is soccer practice?
+              emailMessage:
+                summary: Message from email bridge
+                value:
+                  channel: EMAIL
+                  sender: grandma@example.com
+                  text: "When is Samuli's birthday party?"
+      responses:
+        '200':
+          description: Message accepted for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundResponse'
+        '400':
+          description: Invalid request payload
+
+components:
+  schemas:
+    InboundMessageRequest:
+      type: object
+      required:
+        - channel
+        - sender
+        - text
+      properties:
+        channel:
+          $ref: '#/components/schemas/ChannelType'
+        sender:
+          type: string
+          description: |
+            Sender identifier — format depends on channel:
+            - IMESSAGE: email or phone (e.g. `roose@iki.fi`, `+15551234567`)
+            - SIGNAL: phone number (e.g. `+15551234567`)
+            - EMAIL: email address
+            - SMS: phone number
+          examples:
+            - roose@iki.fi
+            - "+15551234567"
+        text:
+          type: string
+          description: Message text content. May be empty if the message is audio-only.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of when the message was sent. Defaults to server time if omitted.
+          example: "2026-04-10T03:00:00Z"
+        conversation:
+          $ref: '#/components/schemas/InboundConversation'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InboundAttachment'
+
+    InboundConversation:
+      type: object
+      required:
+        - chatId
+      properties:
+        chatId:
+          type: string
+          description: Unique conversation identifier from the source system.
+          example: chat679686843192233386
+        chatGuid:
+          type: string
+          description: |
+            Platform-specific conversation GUID. For iMessage, this is the full
+            `chat.guid` (e.g. `iMessage;+;chat679686843192233386`) needed for
+            AppleScript group replies. Defaults to chatId if omitted.
+          example: "iMessage;+;chat679686843192233386"
+        isGroup:
+          type: boolean
+          default: false
+          description: Whether this is a group conversation.
+        displayName:
+          type: string
+          description: Human-readable conversation name (e.g. group chat title).
+          example: Family Chat
+        participants:
+          type: array
+          items:
+            type: string
+          default: []
+          description: List of participant identifiers in the conversation.
+          example:
+            - roose@iki.fi
+            - saija.taavettila@iki.fi
+
+    InboundAttachment:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          $ref: '#/components/schemas/AttachmentType'
+        mimeType:
+          type: string
+          description: MIME type of the attachment.
+          example: audio/x-caf
+        transcription:
+          type: string
+          description: |
+            Text transcription of the attachment (e.g. from whisper.cpp for audio).
+            If present on AUDIO attachments, it is appended to the message text.
+          example: Muista ostaa maitoa kaupasta
+        filename:
+          type: string
+          description: Original filename of the attachment.
+          example: voice-message-001.caf
+        url:
+          type: string
+          description: URL or local file path where the attachment can be retrieved.
+          example: /Users/juujarvis/Library/Messages/Attachments/ab/01/voice-message-001.caf
+
+    ChannelType:
+      type: string
+      enum:
+        - IMESSAGE
+        - SIGNAL
+        - EMAIL
+        - SMS
+      description: The messaging channel the message originated from.
+
+    AttachmentType:
+      type: string
+      enum:
+        - AUDIO
+        - IMAGE
+        - VIDEO
+        - FILE
+      description: Type of attachment.
+
+    InboundResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: processing
+          description: Always "processing" — the AI reply is delivered asynchronously via the originating channel.
