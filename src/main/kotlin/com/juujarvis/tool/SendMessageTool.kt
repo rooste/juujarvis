@@ -2,11 +2,12 @@ package com.juujarvis.tool
 
 import com.anthropic.core.JsonValue
 import com.anthropic.models.messages.Tool
+import com.juujarvis.messaging.MessagingService
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 
 @Component
-class SendMessageTool : JuujarvisTool {
+class SendMessageTool(private val messagingService: MessagingService) : JuujarvisTool {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -18,7 +19,7 @@ class SendMessageTool : JuujarvisTool {
             .description(
                 "Send a message to a family member. Use this when someone asks to notify, " +
                 "remind, or contact another family member. The message will be delivered " +
-                "through their preferred channel (Signal, iMessage, email, etc.)."
+                "through their preferred channel (iMessage, Signal, email, etc.)."
             )
             .inputSchema(
                 Tool.InputSchema.builder()
@@ -27,7 +28,7 @@ class SendMessageTool : JuujarvisTool {
                             mapOf(
                                 "recipient" to mapOf(
                                     "type" to "string",
-                                    "description" to "Name or role of the recipient (e.g., 'mom', 'kids', 'everyone')"
+                                    "description" to "Name or role of the recipient (e.g., 'Mom', 'kids', 'everyone')"
                                 ),
                                 "message" to mapOf(
                                     "type" to "string",
@@ -46,9 +47,7 @@ class SendMessageTool : JuujarvisTool {
         val recipient = arguments["recipient"] as? String ?: return "Error: recipient is required"
         val message = arguments["message"] as? String ?: return "Error: message is required"
 
-        log.info("SendMessage tool executing: to={}, message={}", recipient, message)
-
-        // TODO: Replace with actual message routing through Signal/iMessage/email
-        return "[STUB] Message sent to $recipient: \"$message\""
+        log.info("SendMessage tool: to={}", recipient)
+        return messagingService.sendToUser(recipient, message)
     }
 }

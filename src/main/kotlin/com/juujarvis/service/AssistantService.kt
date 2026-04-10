@@ -4,6 +4,8 @@ import com.anthropic.client.AnthropicClient
 import com.anthropic.core.JsonValue
 import com.anthropic.helpers.MessageAccumulator
 import com.anthropic.models.messages.*
+import com.juujarvis.messaging.MessagingService
+import com.juujarvis.model.ChannelType
 import com.juujarvis.model.IncomingMessage
 import com.juujarvis.tool.ToolRegistry
 import org.slf4j.LoggerFactory
@@ -15,6 +17,7 @@ class AssistantService(
     private val anthropicClient: AnthropicClient,
     private val toolRegistry: ToolRegistry,
     private val webSocketService: WebSocketService,
+    private val messagingService: MessagingService,
     @Value("\${juujarvis.anthropic.model:claude-sonnet-4-20250514}")
     private val modelId: String
 ) {
@@ -48,6 +51,7 @@ When asked to notify or remind family members, use the send_message tool."""
         )
 
         var loopCount = 0
+        val textBuffer = StringBuilder()
 
         while (loopCount < MAX_TOOL_LOOPS) {
             loopCount++
@@ -70,32 +74,29 @@ When asked to notify or remind family members, use the send_message tool."""
 
             val params = paramsBuilder.build()
 
-            // Stream the response
             val accumulator = MessageAccumulator.create()
-            val textBuffer = StringBuilder()
+            textBuffer.clear()
 
             try {
                 val streamResponse = anthropicClient.messages().createStreaming(params)
                 streamResponse.use { sr ->
                     sr.stream().forEach { event: RawMessageStreamEvent ->
                         accumulator.accumulate(event)
-                        // Extract text deltas
                         event.contentBlockDelta().ifPresent { delta ->
                             delta.delta().text().ifPresent { textDelta ->
                                 val chunk: String = textDelta.text()
                                 textBuffer.append(chunk)
-                                webSocketService.sendStreamChunk(message.userId, chunk)
+                                // Only stream to WebSocket for web UI messages
+                                if (message.channel != ChannelType.IMESSAGE) {
+                                    webSocketService.sendStreamChunk(message.userId, chunk)
+                                }
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
                 log.error("Error streaming from Claude", e)
-                webSocketService.sendStreamChunk(
-                    message.userId,
-                    "Sorry, I encountered an error: ${e.message}"
-                )
-                webSocketService.sendStreamEnd(message.userId)
+                deliverResponse(message, "Sorry, I encountered an error: ${e.message}")
                 return
             }
 
@@ -108,7 +109,7 @@ When asked to notify or remind family members, use the send_message tool."""
 
             if (toolUseBlocks.isEmpty()) {
                 log.info("Response complete (no tool use): {} chars", textBuffer.length)
-                webSocketService.sendStreamEnd(message.userId)
+                deliverResponse(message, textBuffer.toString())
                 return
             }
 
@@ -186,11 +187,20 @@ When asked to notify or remind family members, use the send_message tool."""
         }
 
         log.warn("Max tool loops ({}) reached", MAX_TOOL_LOOPS)
-        webSocketService.sendStreamChunk(
-            message.userId,
-            "\n\n(Reached maximum number of tool calls)"
-        )
-        webSocketService.sendStreamEnd(message.userId)
+        deliverResponse(message, textBuffer.toString())
+    }
+
+    private fun deliverResponse(message: IncomingMessage, text: String) {
+        if (message.channel == ChannelType.IMESSAGE) {
+            if (text.isNotBlank()) {
+                val sent = messagingService.sendDirect(ChannelType.IMESSAGE, message.userId, text)
+                log.info("iMessage reply to {}: {} (sent={})", message.userId, text.take(80), sent)
+                webSocketService.broadcastIMessage("out", message.userId, text)
+            }
+        } else {
+            webSocketService.sendStreamChunk(message.userId, text)
+            webSocketService.sendStreamEnd(message.userId)
+        }
     }
 
     @Suppress("UNCHECKED_CAST")

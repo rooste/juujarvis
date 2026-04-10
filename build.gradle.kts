@@ -27,6 +27,9 @@ dependencies {
     // Anthropic Claude SDK
     implementation("com.anthropic:anthropic-java:2.18.0")
 
+    // SQLite (for iMessage chat.db)
+    implementation("org.xerial:sqlite-jdbc:3.45.1.0")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -40,4 +43,8 @@ kotlin {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
+    args("--spring.profiles.active=local")
 }

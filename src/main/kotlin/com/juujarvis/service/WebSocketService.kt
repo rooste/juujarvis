@@ -39,4 +39,12 @@ class WebSocketService(
             mapOf("type" to "tool", "tool" to toolName, "status" to status)
         )
     }
+
+    /** Broadcast an iMessage event (received or reply sent) to all web UI subscribers */
+    fun broadcastIMessage(direction: String, handle: String, text: String) {
+        messagingTemplate.convertAndSend(
+            "/topic/imessage",
+            mapOf("direction" to direction, "handle" to handle, "text" to text)
+        )
+    }
 }
