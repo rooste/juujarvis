@@ -7,7 +7,8 @@ server:
 
 juujarvis:
   imessage:
-    polling-enabled: true
+    polling-enabled: false
+    own-handles: juujarvis@outlook.com
   anthropic:
     api-key: ${ANTHROPIC_API_KEY:}
     model: claude-sonnet-4-20250514

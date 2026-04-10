@@ -5,6 +5,7 @@ import com.juujarvis.model.Conversation
 import com.juujarvis.model.IncomingMessage
 import com.juujarvis.service.MessageRouter
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import java.time.Instant
@@ -16,13 +17,24 @@ import java.time.Instant
 @RestController
 @RequestMapping("/api/inbound")
 class InboundMessageController(
-    private val messageRouter: MessageRouter
+    private val messageRouter: MessageRouter,
+    @Value("\${juujarvis.imessage.own-handles:}")
+    private val ownHandles: String
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    private val ownHandleSet: Set<String> by lazy {
+        ownHandles.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
+    }
+
     @PostMapping
     fun receiveMessage(@RequestBody request: InboundMessageRequest): ResponseEntity<Map<String, String>> {
+        if (request.sender.lowercase() in ownHandleSet) {
+            log.debug("Ignoring own message from '{}'", request.sender)
+            return ResponseEntity.ok(mapOf("status" to "ignored"))
+        }
+
         log.info("Inbound [{}] from '{}': {}", request.channel, request.sender, request.text.take(80))
 
         val conversation = request.conversation?.let {
