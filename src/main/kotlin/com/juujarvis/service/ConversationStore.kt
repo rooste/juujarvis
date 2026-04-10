@@ -76,6 +76,23 @@ class ConversationStore(
                         updated_at TEXT NOT NULL
                     )
                 """.trimIndent())
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS family_user (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                """.trimIndent())
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS user_contact (
+                        user_id TEXT NOT NULL,
+                        channel_type TEXT NOT NULL,
+                        address TEXT NOT NULL,
+                        PRIMARY KEY (user_id, channel_type, address),
+                        FOREIGN KEY (user_id) REFERENCES family_user(id)
+                    )
+                """.trimIndent())
             }
         }
         log.info("Conversation store initialized at {}", dbPath)
@@ -235,6 +252,80 @@ class ConversationStore(
                 }
                 profiles
             }
+        }
+    }
+
+    // ── User persistence ──
+
+    fun saveUser(user: com.juujarvis.model.User) {
+        connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT INTO family_user (id, name, type, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = ?, type = ?"
+            ).use { stmt ->
+                val now = Instant.now().toString()
+                stmt.setString(1, user.id)
+                stmt.setString(2, user.name)
+                stmt.setString(3, user.type.name)
+                stmt.setString(4, now)
+                stmt.setString(5, user.name)
+                stmt.setString(6, user.type.name)
+                stmt.executeUpdate()
+            }
+            // Replace contacts
+            conn.prepareStatement("DELETE FROM user_contact WHERE user_id = ?").use { stmt ->
+                stmt.setString(1, user.id)
+                stmt.executeUpdate()
+            }
+            conn.prepareStatement("INSERT INTO user_contact (user_id, channel_type, address) VALUES (?, ?, ?)").use { stmt ->
+                user.contacts.forEach { contact ->
+                    stmt.setString(1, user.id)
+                    stmt.setString(2, contact.channelType.name)
+                    stmt.setString(3, contact.address)
+                    stmt.executeUpdate()
+                }
+            }
+        }
+    }
+
+    fun loadAllUsers(): List<com.juujarvis.model.User> {
+        return connection().use { conn ->
+            val users = mutableListOf<com.juujarvis.model.User>()
+            conn.createStatement().use { s ->
+                val rs = s.executeQuery("SELECT id, name, type FROM family_user ORDER BY name")
+                while (rs.next()) {
+                    val userId = rs.getString("id")
+                    val contacts = loadContactsForUser(conn, userId)
+                    users += com.juujarvis.model.User(
+                        id = userId,
+                        name = rs.getString("name"),
+                        type = com.juujarvis.model.UserType.valueOf(rs.getString("type")),
+                        contacts = contacts
+                    )
+                }
+            }
+            users
+        }
+    }
+
+    fun deleteUser(userId: String) {
+        connection().use { conn ->
+            conn.prepareStatement("DELETE FROM user_contact WHERE user_id = ?").use { it.setString(1, userId); it.executeUpdate() }
+            conn.prepareStatement("DELETE FROM family_user WHERE id = ?").use { it.setString(1, userId); it.executeUpdate() }
+        }
+    }
+
+    private fun loadContactsForUser(conn: java.sql.Connection, userId: String): List<com.juujarvis.model.ContactInterface> {
+        return conn.prepareStatement("SELECT channel_type, address FROM user_contact WHERE user_id = ?").use { stmt ->
+            stmt.setString(1, userId)
+            val rs = stmt.executeQuery()
+            val contacts = mutableListOf<com.juujarvis.model.ContactInterface>()
+            while (rs.next()) {
+                contacts += com.juujarvis.model.ContactInterface(
+                    channelType = com.juujarvis.model.ChannelType.valueOf(rs.getString("channel_type")),
+                    address = rs.getString("address")
+                )
+            }
+            contacts
         }
     }
 
