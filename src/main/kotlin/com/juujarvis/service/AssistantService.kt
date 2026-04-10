@@ -18,6 +18,7 @@ class AssistantService(
     private val toolRegistry: ToolRegistry,
     private val webSocketService: WebSocketService,
     private val messagingService: MessagingService,
+    private val userService: UserService,
     @Value("\${juujarvis.anthropic.model:claude-sonnet-4-20250514}")
     private val modelId: String
 ) {
@@ -26,27 +27,34 @@ class AssistantService(
 
     companion object {
         private const val MAX_TOOL_LOOPS = 10
-        private const val SYSTEM_PROMPT = """You are Juujarvis, an AI family assistant. You help the family stay organized by managing their calendar, sending messages between family members, and providing helpful reminders.
+
+        private const val BASE_PROMPT = """You are Juujarvis, an AI family assistant. You help the family stay organized by managing their calendar, sending messages between family members, and providing helpful reminders.
 
 You have access to tools for managing the calendar and sending messages. Use them when the user asks you to create events, check the schedule, remind family members, or contact someone.
 
 Be warm, helpful, and concise. You're part of the family — think of yourself as a helpful household assistant.
 
-Family members:
-- Dad (Heikki) - the primary user
-- Mom - wife
-- Children - the kids
-
-When asked to notify or remind family members, use the send_message tool."""
+When asked to notify or remind family members, use the send_message tool.
+Your reply will automatically be delivered to the conversation this message came from. Only use send_message if you need to reach someone in a DIFFERENT conversation."""
     }
 
     fun processStreaming(message: IncomingMessage) {
-        log.info("Processing message from '{}': {}", message.userId, message.text)
+        val senderUser = userService.findByHandle(message.userId)
+        val senderName = senderUser?.name ?: message.userId
+        log.info("Processing message from '{}' ({}): {}", senderName, message.userId, message.text)
+
+        val systemPrompt = buildSystemPrompt(message, senderName)
+
+        val userText = if (message.channel == ChannelType.IMESSAGE) {
+            "[$senderName]: ${message.text}"
+        } else {
+            message.text
+        }
 
         val conversationMessages = mutableListOf<MessageParam>(
             MessageParam.builder()
                 .role(MessageParam.Role.USER)
-                .content(MessageParam.Content.ofString(message.text))
+                .content(MessageParam.Content.ofString(userText))
                 .build()
         )
 
@@ -60,14 +68,12 @@ When asked to notify or remind family members, use the send_message tool."""
             val paramsBuilder = MessageCreateParams.builder()
                 .model(Model.of(modelId))
                 .maxTokens(2048L)
-                .system(SYSTEM_PROMPT)
+                .system(systemPrompt)
 
-            // Add all tools
             toolRegistry.definitions().forEach { tool ->
                 paramsBuilder.addTool(tool)
             }
 
-            // Add all conversation messages
             conversationMessages.forEach { msg ->
                 paramsBuilder.addMessage(msg)
             }
@@ -86,7 +92,6 @@ When asked to notify or remind family members, use the send_message tool."""
                             delta.delta().text().ifPresent { textDelta ->
                                 val chunk: String = textDelta.text()
                                 textBuffer.append(chunk)
-                                // Only stream to WebSocket for web UI messages
                                 if (message.channel != ChannelType.IMESSAGE) {
                                     webSocketService.sendStreamChunk(message.userId, chunk)
                                 }
@@ -102,7 +107,6 @@ When asked to notify or remind family members, use the send_message tool."""
 
             val accumulatedMessage = accumulator.message()
 
-            // Check if Claude wants to use tools
             val toolUseBlocks = accumulatedMessage.content().filter { block ->
                 block.toolUse().isPresent
             }
@@ -113,10 +117,8 @@ When asked to notify or remind family members, use the send_message tool."""
                 return
             }
 
-            // Claude wants to use tools
             log.info("Claude requested {} tool call(s)", toolUseBlocks.size)
 
-            // Add Claude's response as assistant message
             val assistantContentBlocks = mutableListOf<ContentBlockParam>()
             accumulatedMessage.content().forEach { block ->
                 block.text().ifPresent { textBlock ->
@@ -145,7 +147,6 @@ When asked to notify or remind family members, use the send_message tool."""
                     .build()
             )
 
-            // Execute each tool and collect results
             val toolResults = mutableListOf<ContentBlockParam>()
             toolUseBlocks.forEach { block ->
                 val toolUse = block.toolUse().get()
@@ -177,7 +178,6 @@ When asked to notify or remind family members, use the send_message tool."""
                 )
             }
 
-            // Add tool results as user message
             conversationMessages.add(
                 MessageParam.builder()
                     .role(MessageParam.Role.USER)
@@ -190,11 +190,49 @@ When asked to notify or remind family members, use the send_message tool."""
         deliverResponse(message, textBuffer.toString())
     }
 
+    private fun buildSystemPrompt(message: IncomingMessage, senderName: String): String {
+        val familyMembers = userService.getAllUsers().joinToString("\n") { user ->
+            val handles = user.contacts
+                .filter { it.channelType == ChannelType.IMESSAGE }
+                .joinToString(", ") { it.address }
+            "- ${user.name} (${user.type})" + if (handles.isNotBlank()) " — $handles" else ""
+        }
+
+        val conversationContext = when {
+            message.conversation == null ->
+                "This message arrived via ${message.channel}."
+            message.conversation.isGroup -> {
+                val participantNames = message.conversation.participants.map { handle ->
+                    userService.findByHandle(handle)?.name ?: handle
+                }
+                "This is a GROUP conversation" +
+                    (message.conversation.displayName?.let { " named '$it'" } ?: "") +
+                    " with participants: ${participantNames.joinToString(", ")}." +
+                    " $senderName sent this message."
+            }
+            else ->
+                "This is a 1-on-1 conversation with $senderName."
+        }
+
+        return """$BASE_PROMPT
+
+Family members:
+$familyMembers
+
+Current conversation:
+$conversationContext"""
+    }
+
     private fun deliverResponse(message: IncomingMessage, text: String) {
         if (message.channel == ChannelType.IMESSAGE) {
             if (text.isNotBlank()) {
-                val sent = messagingService.sendDirect(ChannelType.IMESSAGE, message.userId, text)
-                log.info("iMessage reply to {}: {} (sent={})", message.userId, text.take(80), sent)
+                val sent = if (message.conversation != null) {
+                    messagingService.sendToConversation(message.conversation, text)
+                } else {
+                    messagingService.sendDirect(ChannelType.IMESSAGE, message.userId, text)
+                }
+                log.info("iMessage reply to {}: {} (sent={})",
+                    message.conversation?.chatId ?: message.userId, text.take(80), sent)
                 webSocketService.broadcastIMessage("out", message.userId, text)
             }
         } else {

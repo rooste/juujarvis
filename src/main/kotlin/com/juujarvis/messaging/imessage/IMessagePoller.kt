@@ -1,11 +1,14 @@
 package com.juujarvis.messaging.imessage
 
 import com.juujarvis.model.ChannelType
+import com.juujarvis.model.Conversation
 import com.juujarvis.model.IncomingMessage
 import com.juujarvis.service.MessageRouter
+import com.juujarvis.service.WebSocketService
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import java.sql.Connection
 import java.sql.DriverManager
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
@@ -13,15 +16,13 @@ import java.util.concurrent.atomic.AtomicLong
 @Component
 class IMessagePoller(
     private val messageRouter: MessageRouter,
-    private val webSocketService: com.juujarvis.service.WebSocketService
+    private val webSocketService: WebSocketService
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
     private val dbPath = System.getProperty("user.home") + "/Library/Messages/chat.db"
     private val appleEpochOffset = 978307200L
 
-    // Watermark: highest rowid already seen. Initialised to current max on startup so we
-    // don't reprocess history.
     private val lastSeenRowId = AtomicLong(currentMaxRowId())
 
     @Scheduled(fixedDelay = 3000)
@@ -57,11 +58,27 @@ class IMessagePoller(
                         val appleNanos = rs.getLong("date")
                         val timestamp = Instant.ofEpochSecond(appleEpochOffset + appleNanos / 1_000_000_000L)
 
+                        val chatIdentifier = rs.getString("chat_identifier")
+                        val chatGuid = rs.getString("chat_guid")
+                        val style = rs.getInt("style")
+                        val displayName = rs.getString("display_name")
+
+                        val conversation = if (chatIdentifier != null && chatGuid != null) {
+                            Conversation(
+                                chatId = chatIdentifier,
+                                chatGuid = chatGuid,
+                                isGroup = (style == 43),
+                                displayName = displayName,
+                                participants = fetchChatParticipants(conn, chatIdentifier)
+                            )
+                        } else null
+
                         results += rowId to IncomingMessage(
                             userId = handle,
                             channel = ChannelType.IMESSAGE,
                             text = text,
-                            timestamp = timestamp
+                            timestamp = timestamp,
+                            conversation = conversation
                         )
                     }
                     results
@@ -70,6 +87,16 @@ class IMessagePoller(
         } catch (e: Exception) {
             log.error("Failed to poll iMessage database: {}", e.message)
             emptyList()
+        }
+    }
+
+    private fun fetchChatParticipants(conn: Connection, chatIdentifier: String): List<String> {
+        conn.prepareStatement(PARTICIPANTS_QUERY).use { stmt ->
+            stmt.setString(1, chatIdentifier)
+            val rs = stmt.executeQuery()
+            val handles = mutableListOf<String>()
+            while (rs.next()) handles += rs.getString("id")
+            return handles
         }
     }
 
@@ -87,7 +114,6 @@ class IMessagePoller(
         }
     }
 
-    // Same extractor as IMessageProvider — reads text from NSArchiver streamtyped blob
     private fun extractText(bytes: ByteArray): String? {
         val marker = "NSString".toByteArray(Charsets.US_ASCII)
         var markerIdx = -1
@@ -108,12 +134,23 @@ class IMessagePoller(
 
     companion object {
         private val QUERY = """
-            SELECT m.rowid, m.text, m.date, m.attributedBody, COALESCE(h.id, 'unknown') AS handle_id
+            SELECT m.rowid, m.text, m.date, m.attributedBody,
+                   COALESCE(h.id, 'unknown') AS handle_id,
+                   c.chat_identifier, c.guid AS chat_guid, c.display_name, c.style
             FROM message m
             LEFT JOIN handle h ON m.handle_id = h.rowid
+            LEFT JOIN chat_message_join cmj ON cmj.message_id = m.rowid
+            LEFT JOIN chat c ON c.rowid = cmj.chat_id
             WHERE m.rowid > ?
               AND m.is_from_me = 0
             ORDER BY m.rowid ASC
+        """.trimIndent()
+
+        private val PARTICIPANTS_QUERY = """
+            SELECT h.id FROM handle h
+            JOIN chat_handle_join chj ON chj.handle_id = h.rowid
+            JOIN chat c ON c.rowid = chj.chat_id
+            WHERE c.chat_identifier = ?
         """.trimIndent()
     }
 }

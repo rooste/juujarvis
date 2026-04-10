@@ -13,6 +13,12 @@ interface MessagingProvider {
     fun send(to: String, message: String): Boolean
 
     /**
+     * Send a message to a chat/conversation by its identifier (e.g. group chat ID).
+     * Default implementation falls back to send().
+     */
+    fun sendToChat(chatId: String, message: String): Boolean = send(chatId, message)
+
+    /**
      * Fetch recent messages, optionally filtered to a specific contact address.
      * Results are ordered newest-first.
      */

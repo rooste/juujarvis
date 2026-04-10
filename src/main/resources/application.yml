@@ -13,3 +13,9 @@ juujarvis:
 logging:
   level:
     com.juujarvis: DEBUG
+  file:
+    name: logs/juujarvis.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 5

@@ -6,7 +6,8 @@ data class IncomingMessage(
     val userId: String,
     val channel: ChannelType,
     val text: String,
-    val timestamp: Instant = Instant.now()
+    val timestamp: Instant = Instant.now(),
+    val conversation: Conversation? = null
 )
 
 data class OutgoingMessage(

@@ -2,6 +2,7 @@ package com.juujarvis.messaging
 
 import com.juujarvis.model.ChannelType
 import com.juujarvis.model.ContactInterface
+import com.juujarvis.model.Conversation
 import com.juujarvis.service.UserService
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
@@ -56,6 +57,25 @@ class MessagingService(
     }
 
     fun availableChannels(): Set<ChannelType> = providerMap.keys
+
+    /**
+     * Send a message to a conversation (group or 1-on-1).
+     * Groups use sendToChat; 1-on-1 sends to the first participant.
+     */
+    fun sendToConversation(conversation: Conversation, message: String): Boolean {
+        val provider = providerMap[ChannelType.IMESSAGE] ?: run {
+            log.warn("No IMESSAGE provider available")
+            return false
+        }
+        return if (conversation.isGroup) {
+            log.info("Sending to group chat {} (guid={})", conversation.chatId, conversation.chatGuid)
+            provider.sendToChat(conversation.chatGuid, message)
+        } else {
+            val address = conversation.participants.firstOrNull() ?: conversation.chatId
+            log.info("Sending to 1-on-1 chat with {}", address)
+            provider.send(address, message)
+        }
+    }
 
     /**
      * Send a message directly to a raw address (phone number, email handle, etc.)

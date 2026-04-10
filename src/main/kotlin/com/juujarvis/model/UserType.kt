@@ -4,5 +4,6 @@ enum class UserType {
     DAD,
     MOM,
     CHILD,
+    GRANDPARENT,
     FRIEND
 }

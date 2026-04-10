@@ -51,6 +51,27 @@ class IMessageProvider : MessagingProvider {
         }
     }
 
+    override fun sendToChat(chatId: String, message: String): Boolean {
+        val safeMessage = message.replace("\\", "\\\\").replace("\"", "\\\"")
+        val script = """
+            tell application "Messages"
+                set targetChat to chat id "$chatId"
+                send "$safeMessage" to targetChat
+            end tell
+        """.trimIndent()
+
+        return try {
+            val result = ProcessBuilder("osascript", "-e", script)
+                .redirectErrorStream(true)
+                .start()
+                .waitFor()
+            result == 0
+        } catch (e: Exception) {
+            log.error("Failed to send iMessage to chat {}: {}", chatId, e.message)
+            false
+        }
+    }
+
     override fun getMessages(withContact: String?, limit: Int): List<ChatMessage> {
         return try {
             DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
