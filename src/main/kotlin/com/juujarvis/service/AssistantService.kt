@@ -32,11 +32,11 @@ class AssistantService(
 
         private const val BASE_PROMPT = """You are Juujarvis, an AI family assistant running on the family Mac Mini.
 
-Your name honors the Juujärvi heritage. Juujärvi is a lake in Kemijärvi, Finnish Lapland, nestled along the Kemijoki River. When the Juujärvi family emigrated to the United States about a hundred years ago, they shortened their name to Jarv. Your name playfully reunites both halves — the Finnish roots and the American branch — while nodding to a certain famous AI butler.
+Your name honors the Juujärvi heritage. Juujärvi is a lake in Kemijärvi, Finnish Lapland, nestled along the Kemijoki River. When the Juujärvi family emigrated to the United States about a hundred years ago, they shortened their name to Jarv. Your name playfully reunites both halves — the Finnish roots and the American branch — while nodding to a certain famous AI butler from the Iron Man movies. You may not have a suit of armor or a holographic workshop, but you've got calendars, reminders, and an unlimited supply of dad jokes — which, frankly, is the more dangerous arsenal.
 
-You help the family stay organized by managing their calendar, sending messages between family members, and providing helpful reminders.
+You help the family stay organized by managing their calendar, sending messages between family members, searching the web, and providing helpful reminders.
 
-You have access to tools for managing the calendar and sending messages. Use them when the user asks you to create events, check the schedule, remind family members, or contact someone.
+You have access to tools for managing the calendar, sending messages, searching the web, and tracking tasks. Use them when the user asks you to create events, check the schedule, remind family members, look something up, or contact someone.
 
 Be warm, helpful, and concise. You're part of the family — think of yourself as a helpful household assistant who knows and cherishes the family's Finnish-American heritage.
 
@@ -306,8 +306,41 @@ You have a task list. When someone asks you to do something that can't be done i
 Family members:
 $familyMembers$relevantProfiles
 ${buildGroupChatContext()}
+${ buildRecentActivityContext(message) }
 Current conversation:
 $conversationContext$summaryContext"""
+    }
+
+    /**
+     * Build a summary of recent messages from OTHER conversations,
+     * so Juujarvis has cross-conversation awareness (e.g., when instructed
+     * from the web UI to act on something that happened in a group chat).
+     */
+    private fun buildRecentActivityContext(message: IncomingMessage): String {
+        val currentConvId = when {
+            message.conversation != null -> message.conversation.chatId
+            else -> "web-ui-${message.userId}"
+        }
+
+        val since = java.time.Instant.now().minusSeconds(3600) // last hour
+        val recentTurns = conversationStore.loadTurnsSince(since)
+
+        // Group by conversation, exclude the current one
+        val otherConversations = recentTurns
+            .filter { it.conversationId != currentConvId }
+            .groupBy { it.conversationId }
+
+        if (otherConversations.isEmpty()) return ""
+
+        val lines = otherConversations.map { (convId, turns) ->
+            val label = if (convId.startsWith("web-ui-")) "Web UI" else "Chat $convId"
+            val messages = turns.takeLast(5).joinToString("\n  ") { t ->
+                "[${t.senderName ?: t.role}]: ${t.content.take(200)}"
+            }
+            "--- $label ---\n  $messages"
+        }.joinToString("\n")
+
+        return "\nRecent activity in other conversations (last hour):\n$lines\n"
     }
 
     private fun buildGroupChatContext(): String {
