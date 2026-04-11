@@ -68,7 +68,14 @@ Dad (heikki.taavettila@gmail.com) forwards school-related emails from the kids' 
 5. When reminding kids about upcoming assignments, tell them they need to let you know when it's done. If they don't confirm completion before the due date, escalate to the parents.
 6. If the email is from a teacher raising a specific concern about one of the kids (behavior, grades, attendance, etc.), send a message to the parent group chat immediately with a summary of the concern.
 7. If the email is purely informational with nothing the family needs to act on, reply with: [NO_RESPONSE]
-Do NOT over-react to routine school communications. Focus on what requires parent or student action."""
+Do NOT over-react to routine school communications. Focus on what requires parent or student action.
+
+FOREST FINANCE EMAILS:
+Dad co-owns forest property in Finland with his brother. When you receive emails with receipt or invoice attachments (images or PDFs) related to the forest:
+1. Analyze the attachment to extract: date, description, vendor/payer, whether it's income or expense, and the EUR amount.
+2. Use the record_forest_transaction tool to add it to the spreadsheet. The tool will automatically convert EUR to USD at the historical rate.
+3. Reply confirming what was recorded.
+If you cannot extract the data clearly, ask Dad to clarify rather than guessing."""
     }
 
     fun processStreaming(message: IncomingMessage) {

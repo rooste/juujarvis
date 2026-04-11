@@ -25,7 +25,7 @@ class MicrosoftAuthService(
     private val tokenFile = File("secrets/microsoft-tokens.json")
     private val restClient = RestClient.create()
 
-    private val scopes = "Mail.Read Mail.Send offline_access User.Read"
+    private val scopes = "Mail.Read Mail.Send Files.ReadWrite offline_access User.Read"
     private val redirectUri = "http://localhost:8080/auth/microsoft/callback"
 
     fun isConfigured(): Boolean = clientId.isNotBlank() && clientSecret.isNotBlank()

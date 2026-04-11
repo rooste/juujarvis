@@ -29,6 +29,9 @@ juujarvis:
       - start: "07:00"
         end: "22:00"
         interval-seconds: 60
+  forest:
+    spreadsheet-name: Forest_Finances.xlsx
+    table-name: Transactions
   google:
     credentials-path: secrets/google-credentials.json
     tokens-path: secrets/google-tokens

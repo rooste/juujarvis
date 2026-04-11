@@ -32,6 +32,7 @@ class EmailPoller(
     private val outlookEmailService: OutlookEmailService,
     private val conversationStore: ConversationStore,
     private val messageRouter: MessageRouter,
+    private val emailAttachmentService: EmailAttachmentService,
     private val config: EmailPollerConfig
 ) {
 
@@ -87,7 +88,12 @@ class EmailPoller(
             // Read full body and route through assistant
             val detail = outlookEmailService.readEmail(email.id) ?: continue
             val bodyText = stripHtml(detail.body).take(2000)
-            val messageText = "Email from: ${email.fromName ?: email.from} <${email.from}>\nSubject: ${email.subject}\n\n$bodyText"
+
+            // Process attachments
+            val attachments = emailAttachmentService.getAttachments(email.id)
+            val attachmentText = buildAttachmentText(attachments)
+
+            val messageText = "Email from: ${email.fromName ?: email.from} <${email.from}>\nSubject: ${email.subject}\n\n$bodyText$attachmentText"
 
             val incoming = IncomingMessage(
                 userId = email.from,
@@ -101,6 +107,30 @@ class EmailPoller(
         if (newCount > 0) {
             log.info("Processed {} new email(s)", newCount)
         }
+    }
+
+    private fun buildAttachmentText(attachments: List<EmailAttachmentService.Attachment>): String {
+        if (attachments.isEmpty()) return ""
+
+        val parts = mutableListOf<String>()
+        for (att in attachments) {
+            when {
+                att.isPdf -> {
+                    val text = emailAttachmentService.extractPdfText(att)
+                    if (text.isNotBlank()) {
+                        parts += "\n\n--- Attachment: ${att.name} (PDF) ---\n${text.take(3000)}"
+                    }
+                    log.info("Processed PDF attachment: {} ({} chars)", att.name, text.length)
+                }
+                att.isImage -> {
+                    // Include base64 image reference for Claude to analyze
+                    val base64 = emailAttachmentService.imageToBase64(att)
+                    parts += "\n\n--- Attachment: ${att.name} (Image) ---\n[IMAGE_BASE64:${att.contentType}:$base64]"
+                    log.info("Processed image attachment: {} ({} bytes)", att.name, att.contentBytes.size)
+                }
+            }
+        }
+        return parts.joinToString("")
     }
 
     private fun stripHtml(html: String): String {

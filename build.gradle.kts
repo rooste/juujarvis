@@ -30,6 +30,9 @@ dependencies {
     // SQLite (for iMessage chat.db)
     implementation("org.xerial:sqlite-jdbc:3.45.1.0")
 
+    // PDF parsing
+    implementation("org.apache.pdfbox:pdfbox:3.0.4")
+
     // Google Calendar API
     implementation("com.google.api-client:google-api-client:2.7.2")
     implementation("com.google.oauth-client:google-oauth-client-jetty:1.36.0")
