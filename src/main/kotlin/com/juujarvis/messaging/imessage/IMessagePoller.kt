@@ -3,9 +3,12 @@ package com.juujarvis.messaging.imessage
 import com.juujarvis.model.ChannelType
 import com.juujarvis.model.Conversation
 import com.juujarvis.model.IncomingMessage
+import com.juujarvis.service.ConversationStore
 import com.juujarvis.service.MessageRouter
+import com.juujarvis.service.UserService
 import com.juujarvis.service.WebSocketService
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import java.sql.Connection
@@ -17,12 +20,19 @@ import java.util.concurrent.atomic.AtomicLong
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty("juujarvis.imessage.polling-enabled", havingValue = "true", matchIfMissing = true)
 class IMessagePoller(
     private val messageRouter: MessageRouter,
-    private val webSocketService: WebSocketService
+    private val webSocketService: WebSocketService,
+    private val conversationStore: ConversationStore,
+    private val userService: UserService,
+    @Value("\${juujarvis.imessage.own-handles:}")
+    private val ownHandles: String
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
     private val dbPath = System.getProperty("user.home") + "/Library/Messages/chat.db"
     private val appleEpochOffset = 978307200L
+    private val ownHandleSet: Set<String> by lazy {
+        ownHandles.split(",").map { it.trim().lowercase() }.filter { it.isNotBlank() }.toSet()
+    }
 
     private val lastSeenRowId = AtomicLong(currentMaxRowId())
 
@@ -33,20 +43,32 @@ class IMessagePoller(
         if (newMessages.isEmpty()) return
 
         log.info("iMessage poller: {} new message(s) since rowid {}", newMessages.size, since)
-        newMessages.forEach { (rowId, msg) ->
+        newMessages.forEach { (rowId, isFromMe, msg) ->
             lastSeenRowId.updateAndGet { maxOf(it, rowId) }
-            webSocketService.broadcastIMessage("in", msg.userId, msg.text)
-            messageRouter.handleIncoming(msg)
+            if (isFromMe) {
+                saveOwnMessage(msg)
+            } else {
+                webSocketService.broadcastIMessage("in", msg.userId, msg.text)
+                messageRouter.handleIncoming(msg)
+            }
         }
     }
 
-    private fun fetchSince(sinceRowId: Long): List<Pair<Long, IncomingMessage>> {
+    private fun saveOwnMessage(msg: IncomingMessage) {
+        val conversationId = msg.conversation?.chatId ?: return
+        val senderName = userService.findByHandle(msg.userId)?.name ?: "Dad"
+        conversationStore.saveTurn(conversationId, "user", msg.text, senderName, msg.channel.name, msg.timestamp)
+        webSocketService.broadcastIMessage("out-device", msg.userId, msg.text)
+        log.info("Saved device-sent message to conversation {}: {}", conversationId, msg.text.take(80))
+    }
+
+    private fun fetchSince(sinceRowId: Long): List<Triple<Long, Boolean, IncomingMessage>> {
         return try {
             DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
                 conn.prepareStatement(QUERY).use { stmt ->
                     stmt.setLong(1, sinceRowId)
                     val rs = stmt.executeQuery()
-                    val results = mutableListOf<Pair<Long, IncomingMessage>>()
+                    val results = mutableListOf<Triple<Long, Boolean, IncomingMessage>>()
                     while (rs.next()) {
                         val text = rs.getString("text")
                             ?: rs.getBytes("attributedBody")
@@ -55,6 +77,7 @@ class IMessagePoller(
                         if (text.isBlank()) continue
 
                         val rowId = rs.getLong("rowid")
+                        val isFromMe = rs.getInt("is_from_me") == 1
                         val handle = rs.getString("handle_id") ?: "unknown"
                         val appleNanos = rs.getLong("date")
                         val timestamp = Instant.ofEpochSecond(appleEpochOffset + appleNanos / 1_000_000_000L)
@@ -74,13 +97,16 @@ class IMessagePoller(
                             )
                         } else null
 
-                        results += rowId to IncomingMessage(
-                            userId = handle,
+                        // For own messages, use the first own handle as the userId
+                        val userId = if (isFromMe) ownHandleSet.firstOrNull() ?: handle else handle
+
+                        results += Triple(rowId, isFromMe, IncomingMessage(
+                            userId = userId,
                             channel = ChannelType.IMESSAGE,
                             text = text,
                             timestamp = timestamp,
                             conversation = conversation
-                        )
+                        ))
                     }
                     results
                 }
@@ -135,7 +161,7 @@ class IMessagePoller(
 
     companion object {
         private val QUERY = """
-            SELECT m.rowid, m.text, m.date, m.attributedBody,
+            SELECT m.rowid, m.text, m.date, m.attributedBody, m.is_from_me,
                    COALESCE(h.id, 'unknown') AS handle_id,
                    c.chat_identifier, c.guid AS chat_guid, c.display_name, c.style
             FROM message m
@@ -143,7 +169,6 @@ class IMessagePoller(
             LEFT JOIN chat_message_join cmj ON cmj.message_id = m.rowid
             LEFT JOIN chat c ON c.rowid = cmj.chat_id
             WHERE m.rowid > ?
-              AND m.is_from_me = 0
             ORDER BY m.rowid ASC
         """.trimIndent()
 
