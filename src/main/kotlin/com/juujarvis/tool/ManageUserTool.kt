@@ -56,6 +56,10 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                                 "timezone" to mapOf(
                                     "type" to "string",
                                     "description" to "IANA timezone ID (e.g., 'America/Los_Angeles', 'Europe/Helsinki'). Update this when a user indicates they have moved or are in a different timezone."
+                                ),
+                                "contact_description" to mapOf(
+                                    "type" to "string",
+                                    "description" to "Description for the contact being added/updated (e.g., 'work', 'school', 'personal', 'mom work email')"
                                 )
                             )
                         )
@@ -75,7 +79,10 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                 val users = userService.getAllUsers()
                 if (users.isEmpty()) return "No users registered"
                 users.joinToString("\n") { u ->
-                    val contacts = u.contacts.joinToString(", ") { "${it.channelType}: ${it.address}" }
+                    val contacts = u.contacts.joinToString(", ") { c ->
+                        val desc = c.description?.let { " [$it]" } ?: ""
+                        "${c.channelType}: ${c.address}$desc"
+                    }
                     "- ${u.name} (${u.type}, ${u.timezone}) — $contacts"
                 }
             }
@@ -167,9 +174,10 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
 
     private fun buildContacts(arguments: Map<String, Any?>): List<ContactInterface> {
         val contacts = mutableListOf<ContactInterface>()
-        (arguments["imessage"] as? String)?.let { contacts.add(ContactInterface(ChannelType.IMESSAGE, it)) }
-        (arguments["email"] as? String)?.let { contacts.add(ContactInterface(ChannelType.EMAIL, it)) }
-        (arguments["phone"] as? String)?.let { contacts.add(ContactInterface(ChannelType.SMS, it)) }
+        val desc = arguments["contact_description"] as? String
+        (arguments["imessage"] as? String)?.let { contacts.add(ContactInterface(ChannelType.IMESSAGE, it, desc)) }
+        (arguments["email"] as? String)?.let { contacts.add(ContactInterface(ChannelType.EMAIL, it, desc)) }
+        (arguments["phone"] as? String)?.let { contacts.add(ContactInterface(ChannelType.SMS, it, desc)) }
         return contacts
     }
 
@@ -183,17 +191,18 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
     }
 
     private fun mergeContacts(contacts: MutableList<ContactInterface>, arguments: Map<String, Any?>) {
+        val desc = arguments["contact_description"] as? String
         (arguments["imessage"] as? String)?.let { addr ->
             contacts.removeAll { it.channelType == ChannelType.IMESSAGE }
-            contacts.add(ContactInterface(ChannelType.IMESSAGE, addr))
+            contacts.add(ContactInterface(ChannelType.IMESSAGE, addr, desc))
         }
         (arguments["email"] as? String)?.let { addr ->
             contacts.removeAll { it.channelType == ChannelType.EMAIL }
-            contacts.add(ContactInterface(ChannelType.EMAIL, addr))
+            contacts.add(ContactInterface(ChannelType.EMAIL, addr, desc))
         }
         (arguments["phone"] as? String)?.let { addr ->
             contacts.removeAll { it.channelType == ChannelType.SMS }
-            contacts.add(ContactInterface(ChannelType.SMS, addr))
+            contacts.add(ContactInterface(ChannelType.SMS, addr, desc))
         }
     }
 }

@@ -18,6 +18,17 @@ juujarvis:
     api-token: ${CONFLUENCE_API_TOKEN:}
   brave:
     api-key: ${BRAVE_API_KEY:}
+  microsoft:
+    client-id: ${MICROSOFT_CLIENT_ID:}
+    client-secret: ${MICROSOFT_CLIENT_SECRET:}
+    tenant-id: ${MICROSOFT_TENANT_ID:}
+  email:
+    polling-enabled: true
+    default-interval-seconds: 1200
+    schedules:
+      - start: "07:00"
+        end: "22:00"
+        interval-seconds: 60
   google:
     credentials-path: secrets/google-credentials.json
     tokens-path: secrets/google-tokens

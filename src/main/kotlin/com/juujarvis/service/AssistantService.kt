@@ -21,6 +21,7 @@ class AssistantService(
     private val messagingService: MessagingService,
     private val userService: UserService,
     private val conversationStore: ConversationStore,
+    private val outlookEmailService: OutlookEmailService,
     @Value("\${juujarvis.anthropic.model:claude-sonnet-4-20250514}")
     private val modelId: String
 ) {
@@ -63,6 +64,7 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
 
         val conversationId = when {
             message.conversation != null -> message.conversation.chatId
+            message.channel == ChannelType.EMAIL -> "email-${message.userId}"
             else -> "web-ui-${message.userId}"
         }
 
@@ -307,6 +309,7 @@ Family members:
 $familyMembers$relevantProfiles
 ${buildGroupChatContext()}
 ${ buildRecentActivityContext(message) }
+${ buildRecentEmailContext() }
 Current conversation:
 $conversationContext$summaryContext"""
     }
@@ -341,6 +344,16 @@ $conversationContext$summaryContext"""
         }.joinToString("\n")
 
         return "\nRecent activity in other conversations (last hour):\n$lines\n"
+    }
+
+    private fun buildRecentEmailContext(): String {
+        val emails = conversationStore.loadRecentEmailSummaries(hours = 24)
+        if (emails.isEmpty()) return ""
+        val lines = emails.take(10).joinToString("\n") { e ->
+            val from = e.fromName?.let { "$it <${e.fromAddress}>" } ?: e.fromAddress
+            "- From: $from | Subject: ${e.subject} | ${e.summary.take(150)}"
+        }
+        return "\nRecent emails (last 24h):\n$lines\n"
     }
 
     private fun buildGroupChatContext(): String {
@@ -429,21 +442,38 @@ $conversationContext$summaryContext"""
     }
 
     private fun deliverResponse(message: IncomingMessage, text: String) {
-        if (message.channel == ChannelType.IMESSAGE) {
-            if (text.isNotBlank()) {
-                val sent = if (message.conversation != null) {
-                    messagingService.sendToConversation(message.conversation, text)
-                } else {
-                    messagingService.sendDirect(ChannelType.IMESSAGE, message.userId, text)
+        when (message.channel) {
+            ChannelType.IMESSAGE -> {
+                if (text.isNotBlank()) {
+                    val sent = if (message.conversation != null) {
+                        messagingService.sendToConversation(message.conversation, text)
+                    } else {
+                        messagingService.sendDirect(ChannelType.IMESSAGE, message.userId, text)
+                    }
+                    log.info("iMessage reply to {}: {} (sent={})",
+                        message.conversation?.chatId ?: message.userId, text.take(80), sent)
+                    webSocketService.broadcastIMessage("out", message.userId, text)
                 }
-                log.info("iMessage reply to {}: {} (sent={})",
-                    message.conversation?.chatId ?: message.userId, text.take(80), sent)
-                webSocketService.broadcastIMessage("out", message.userId, text)
             }
-        } else {
-            webSocketService.sendStreamChunk(message.userId, text)
-            webSocketService.sendStreamEnd(message.userId)
+            ChannelType.EMAIL -> {
+                if (text.isNotBlank() && outlookEmailService.isAvailable()) {
+                    // Extract subject from the original message for the reply
+                    val subject = extractEmailSubject(message.text)
+                    val replySubject = if (subject.startsWith("Re:", ignoreCase = true)) subject else "Re: $subject"
+                    val sent = outlookEmailService.sendEmail(message.userId, replySubject, text)
+                    log.info("Email reply to {}: {} (sent={})", message.userId, text.take(80), sent)
+                }
+            }
+            else -> {
+                webSocketService.sendStreamChunk(message.userId, text)
+                webSocketService.sendStreamEnd(message.userId)
+            }
         }
+    }
+
+    private fun extractEmailSubject(messageText: String): String {
+        val subjectLine = messageText.lines().find { it.startsWith("Subject: ") }
+        return subjectLine?.removePrefix("Subject: ") ?: "Juujarvis"
     }
 
     /**

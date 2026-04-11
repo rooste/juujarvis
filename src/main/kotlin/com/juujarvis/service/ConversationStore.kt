@@ -48,6 +48,17 @@ data class ScheduledReminder(
     val sendAt: Instant
 )
 
+data class EmailSummaryRecord(
+    val id: Long = 0,
+    val messageId: String,
+    val fromAddress: String,
+    val fromName: String?,
+    val subject: String,
+    val summary: String,
+    val receivedAt: String,
+    val createdAt: Instant = Instant.now()
+)
+
 data class JuujarvisTask(
     val id: Long = 0,
     val title: String,
@@ -115,6 +126,7 @@ class ConversationStore(
                         user_id TEXT NOT NULL,
                         channel_type TEXT NOT NULL,
                         address TEXT NOT NULL,
+                        description TEXT,
                         PRIMARY KEY (user_id, channel_type, address),
                         FOREIGN KEY (user_id) REFERENCES family_user(id)
                     )
@@ -143,13 +155,23 @@ class ConversationStore(
                     )
                 """.trimIndent())
                 s.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON juujarvis_task(status)")
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS email_summary (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        message_id TEXT NOT NULL UNIQUE,
+                        from_address TEXT NOT NULL,
+                        from_name TEXT,
+                        subject TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        received_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                """.trimIndent())
+                s.execute("CREATE INDEX IF NOT EXISTS idx_email_summary_received ON email_summary(received_at)")
 
-                // Migrate: add timezone column to existing databases
-                try {
-                    s.execute("ALTER TABLE family_user ADD COLUMN timezone TEXT")
-                } catch (_: Exception) {
-                    // Column already exists — ignore
-                }
+                // Migrate: add columns to existing databases
+                try { s.execute("ALTER TABLE family_user ADD COLUMN timezone TEXT") } catch (_: Exception) {}
+                try { s.execute("ALTER TABLE user_contact ADD COLUMN description TEXT") } catch (_: Exception) {}
             }
         }
         log.info("Conversation store initialized at {}", dbPath)
@@ -335,11 +357,12 @@ class ConversationStore(
                 stmt.setString(1, user.id)
                 stmt.executeUpdate()
             }
-            conn.prepareStatement("INSERT INTO user_contact (user_id, channel_type, address) VALUES (?, ?, ?)").use { stmt ->
+            conn.prepareStatement("INSERT INTO user_contact (user_id, channel_type, address, description) VALUES (?, ?, ?, ?)").use { stmt ->
                 user.contacts.forEach { contact ->
                     stmt.setString(1, user.id)
                     stmt.setString(2, contact.channelType.name)
                     stmt.setString(3, contact.address)
+                    stmt.setString(4, contact.description)
                     stmt.executeUpdate()
                 }
             }
@@ -376,14 +399,15 @@ class ConversationStore(
     }
 
     private fun loadContactsForUser(conn: java.sql.Connection, userId: String): List<com.juujarvis.model.ContactInterface> {
-        return conn.prepareStatement("SELECT channel_type, address FROM user_contact WHERE user_id = ?").use { stmt ->
+        return conn.prepareStatement("SELECT channel_type, address, description FROM user_contact WHERE user_id = ?").use { stmt ->
             stmt.setString(1, userId)
             val rs = stmt.executeQuery()
             val contacts = mutableListOf<com.juujarvis.model.ContactInterface>()
             while (rs.next()) {
                 contacts += com.juujarvis.model.ContactInterface(
                     channelType = com.juujarvis.model.ChannelType.valueOf(rs.getString("channel_type")),
-                    address = rs.getString("address")
+                    address = rs.getString("address"),
+                    description = rs.getString("description")
                 )
             }
             contacts
@@ -582,6 +606,60 @@ class ConversationStore(
             createdAt = Instant.parse(rs.getString("created_at")),
             completedAt = if (completedStr != null) Instant.parse(completedStr) else null
         )
+    }
+
+    // ── Email summaries ──
+
+    fun saveEmailSummary(record: EmailSummaryRecord) {
+        connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT OR IGNORE INTO email_summary (message_id, from_address, from_name, subject, summary, received_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ).use { stmt ->
+                stmt.setString(1, record.messageId)
+                stmt.setString(2, record.fromAddress)
+                stmt.setString(3, record.fromName)
+                stmt.setString(4, record.subject)
+                stmt.setString(5, record.summary)
+                stmt.setString(6, record.receivedAt)
+                stmt.setString(7, record.createdAt.toString())
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    fun hasEmailSummary(messageId: String): Boolean {
+        return connection().use { conn ->
+            conn.prepareStatement("SELECT 1 FROM email_summary WHERE message_id = ?").use { stmt ->
+                stmt.setString(1, messageId)
+                stmt.executeQuery().next()
+            }
+        }
+    }
+
+    fun loadRecentEmailSummaries(hours: Int = 24): List<EmailSummaryRecord> {
+        val since = Instant.now().minusSeconds(hours.toLong() * 3600).toString()
+        return connection().use { conn ->
+            conn.prepareStatement(
+                "SELECT id, message_id, from_address, from_name, subject, summary, received_at, created_at FROM email_summary WHERE created_at >= ? ORDER BY received_at DESC"
+            ).use { stmt ->
+                stmt.setString(1, since)
+                val rs = stmt.executeQuery()
+                val results = mutableListOf<EmailSummaryRecord>()
+                while (rs.next()) {
+                    results += EmailSummaryRecord(
+                        id = rs.getLong("id"),
+                        messageId = rs.getString("message_id"),
+                        fromAddress = rs.getString("from_address"),
+                        fromName = rs.getString("from_name"),
+                        subject = rs.getString("subject"),
+                        summary = rs.getString("summary"),
+                        receivedAt = rs.getString("received_at"),
+                        createdAt = Instant.parse(rs.getString("created_at"))
+                    )
+                }
+                results
+            }
+        }
     }
 
     private fun connection() = DriverManager.getConnection(jdbcUrl).also { conn ->
