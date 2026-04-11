@@ -7,7 +7,11 @@ import org.slf4j.LoggerFactory
 import org.springframework.http.HttpHeaders
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestClient
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.util.Base64
+import javax.imageio.ImageIO
 
 @Service
 class EmailAttachmentService(
@@ -82,9 +86,36 @@ class EmailAttachmentService(
     }
 
     /**
-     * Get image as base64 for sending to Claude.
+     * Get image as base64 for sending to Claude, resizing if too large.
+     * Claude has token limits so we cap images at ~1MB.
      */
     fun imageToBase64(attachment: Attachment): String {
-        return Base64.getEncoder().encodeToString(attachment.contentBytes)
+        val maxBytes = 1_000_000
+        val bytes = if (attachment.contentBytes.size > maxBytes) {
+            resizeImage(attachment.contentBytes, attachment.contentType)
+        } else {
+            attachment.contentBytes
+        }
+        return Base64.getEncoder().encodeToString(bytes)
+    }
+
+    private fun resizeImage(bytes: ByteArray, contentType: String): ByteArray {
+        return try {
+            val img = ImageIO.read(ByteArrayInputStream(bytes)) ?: return bytes
+            val scale = Math.min(1600.0 / img.width, 1600.0 / img.height).coerceAtMost(1.0)
+            val newW = (img.width * scale).toInt()
+            val newH = (img.height * scale).toInt()
+            val resized = BufferedImage(newW, newH, BufferedImage.TYPE_INT_RGB)
+            val g = resized.createGraphics()
+            g.drawImage(img, 0, 0, newW, newH, null)
+            g.dispose()
+            val out = ByteArrayOutputStream()
+            ImageIO.write(resized, "jpg", out)
+            log.info("Resized image from {}x{} to {}x{} ({}KB → {}KB)", img.width, img.height, newW, newH, bytes.size / 1024, out.size() / 1024)
+            out.toByteArray()
+        } catch (e: Exception) {
+            log.warn("Failed to resize image: {}", e.message)
+            bytes
+        }
     }
 }

@@ -23,15 +23,14 @@ juujarvis:
     client-secret: ${MICROSOFT_CLIENT_SECRET:}
     tenant-id: ${MICROSOFT_TENANT_ID:}
   email:
-    polling-enabled: true
+    polling-enabled: false
     default-interval-seconds: 1200
     schedules:
       - start: "07:00"
         end: "22:00"
         interval-seconds: 60
   forest:
-    spreadsheet-name: Forest_Finances.xlsx
-    table-name: Transactions
+    spreadsheet-name: ${FOREST_SPREADSHEET_NAME:}
   google:
     credentials-path: secrets/google-credentials.json
     tokens-path: secrets/google-tokens

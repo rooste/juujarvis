@@ -56,12 +56,7 @@ class OneDriveExcelService(
      */
     fun addTableRow(item: DriveItemInfo, tableName: String, values: List<Any?>): Boolean {
         val token = authService.getAccessToken() ?: return false
-
-        val basePath = if (item.driveId != null) {
-            "/drives/${item.driveId}/items/${item.itemId}"
-        } else {
-            "/me/drive/items/${item.itemId}"
-        }
+        val basePath = itemBasePath(item)
 
         val payload = objectMapper.createObjectNode().apply {
             putArray("values").addArray().apply {
@@ -90,6 +85,76 @@ class OneDriveExcelService(
         } catch (e: Exception) {
             log.error("Failed to add row to table '{}': {}", tableName, e.message)
             false
+        }
+    }
+
+    /**
+     * Get the used range of a worksheet to find the next empty row.
+     */
+    fun getNextRow(item: DriveItemInfo, worksheetName: String): Int {
+        val token = authService.getAccessToken() ?: return 2
+        val basePath = itemBasePath(item)
+
+        return try {
+            val response = restClient.get()
+                .uri("$basePath/workbook/worksheets/$worksheetName/usedRange")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer $token")
+                .retrieve()
+                .body(String::class.java)
+
+            val json = objectMapper.readTree(response)
+            val rows = json.get("values")?.size() ?: 1
+            rows + 1 // next row after used range
+        } catch (e: Exception) {
+            log.warn("Could not determine next row for '{}', defaulting to 2: {}", worksheetName, e.message)
+            2
+        }
+    }
+
+    /**
+     * Write values to a specific range in a worksheet.
+     */
+    fun writeRange(item: DriveItemInfo, worksheetName: String, address: String, values: List<List<Any?>>): Boolean {
+        val token = authService.getAccessToken() ?: return false
+        val basePath = itemBasePath(item)
+
+        val payload = objectMapper.createObjectNode().apply {
+            val valuesArray = putArray("values")
+            values.forEach { row ->
+                val rowArray = valuesArray.addArray()
+                row.forEach { v ->
+                    when (v) {
+                        is Number -> rowArray.add(v.toDouble())
+                        is String -> rowArray.add(v)
+                        null -> rowArray.addNull()
+                        else -> rowArray.add(v.toString())
+                    }
+                }
+            }
+        }
+
+        return try {
+            restClient.method(org.springframework.http.HttpMethod.PATCH)
+                .uri("$basePath/workbook/worksheets/$worksheetName/range(address='$address')")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer $token")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(objectMapper.writeValueAsString(payload))
+                .retrieve()
+                .toBodilessEntity()
+
+            log.info("Wrote to {}!{}: {}", worksheetName, address, values)
+            true
+        } catch (e: Exception) {
+            log.error("Failed to write to {}!{}: {}", worksheetName, address, e.message)
+            false
+        }
+    }
+
+    private fun itemBasePath(item: DriveItemInfo): String {
+        return if (item.driveId != null) {
+            "/drives/${item.driveId}/items/${item.itemId}"
+        } else {
+            "/me/drive/items/${item.itemId}"
         }
     }
 

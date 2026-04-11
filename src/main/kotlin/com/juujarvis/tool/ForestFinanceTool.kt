@@ -7,15 +7,14 @@ import com.juujarvis.service.OneDriveExcelService
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
+import java.time.LocalDate
 
 @Component
 class ForestFinanceTool(
     private val excelService: OneDriveExcelService,
     private val exchangeRateService: ExchangeRateService,
-    @Value("\${juujarvis.forest.spreadsheet-name:Forest_Finances.xlsx}")
-    private val spreadsheetName: String,
-    @Value("\${juujarvis.forest.table-name:Transactions}")
-    private val tableName: String
+    @Value("\${juujarvis.forest.spreadsheet-name:Hilkanaho expenses.xlsx}")
+    private val spreadsheetName: String
 ) : JuujarvisTool {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -76,21 +75,29 @@ class ForestFinanceTool(
         // Get exchange rate
         val rate = exchangeRateService.getEurToUsd(date)
             ?: return "Error: could not fetch EUR/USD exchange rate for $date"
-        val amountUsd = Math.round(amountEur * rate * 100) / 100.0
+        val perNasu = Math.round(amountEur / 2.0 * 100) / 100.0
+        val amountUsd = Math.round(perNasu * rate * 100) / 100.0
 
         // Find the spreadsheet
         val fileInfo = excelService.findSharedFile(spreadsheetName)
             ?: return "Error: could not find spreadsheet '$spreadsheetName' in OneDrive. Make sure it's shared with juujarvis@outlook.com."
 
-        // Add the row: Date, Description, Vendor/Payer, Type, EUR, USD, Exchange Rate, Source
-        val row = listOf(date, description, vendorOrPayer, type, amountEur, amountUsd, rate, "Juujarvis")
-        val success = excelService.addTableRow(fileInfo, tableName, row)
+        // Determine which worksheet based on the transaction date year
+        val year = try { LocalDate.parse(date).year.toString() } catch (_: Exception) { "2026" }
+
+        // Find next empty row
+        val nextRow = excelService.getNextRow(fileInfo, year)
+        val address = "A$nextRow:F$nextRow"
+
+        // Row: Date, Description, Type, EUR, Per nasu, USD
+        val row = listOf(date, "$description ($vendorOrPayer)".trimEnd('(', ' ', ')'), type, amountEur, perNasu, amountUsd)
+        val success = excelService.writeRange(fileInfo, year, address, listOf(row))
 
         return if (success) {
             log.info("Recorded forest transaction: {} {} EUR {} ({} USD at {})", type, amountEur, description, amountUsd, rate)
-            "Recorded $type: $description — €$amountEur (\$$amountUsd USD at rate $rate on $date)"
+            "Recorded $type on $year sheet: $description — €$amountEur (€$perNasu per person, \$$amountUsd USD at rate $rate)"
         } else {
-            "Failed to add row to spreadsheet. Check that the table '$tableName' exists in '$spreadsheetName'."
+            "Failed to add row to spreadsheet '$spreadsheetName' on sheet '$year'."
         }
     }
 }

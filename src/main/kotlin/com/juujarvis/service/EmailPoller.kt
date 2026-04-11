@@ -1,5 +1,6 @@
 package com.juujarvis.service
 
+import com.juujarvis.messaging.MessagingService
 import com.juujarvis.model.ChannelType
 import com.juujarvis.model.IncomingMessage
 import org.slf4j.LoggerFactory
@@ -33,6 +34,8 @@ class EmailPoller(
     private val conversationStore: ConversationStore,
     private val messageRouter: MessageRouter,
     private val emailAttachmentService: EmailAttachmentService,
+    private val webSocketService: WebSocketService,
+    private val messagingService: MessagingService,
     private val config: EmailPollerConfig
 ) {
 
@@ -69,6 +72,22 @@ class EmailPoller(
         var newCount = 0
         for (email in emails) {
             if (conversationStore.hasEmailSummary(email.id)) continue
+
+            // System/service provider emails: don't reply, notify Dad instead
+            if (isSystemEmail(email.from)) {
+                log.info("System email from {} — notifying Dad", email.from)
+                conversationStore.saveEmailSummary(
+                    EmailSummaryRecord(
+                        messageId = email.id, fromAddress = email.from, fromName = email.fromName,
+                        subject = email.subject, summary = "(system notification — forwarded to Dad)", receivedAt = email.receivedAt
+                    )
+                )
+                val alert = "Service/system email received from ${email.from}\nSubject: ${email.subject}\nPreview: ${email.preview.take(200)}"
+                webSocketService.sendStreamChunk("dad", alert)
+                webSocketService.sendStreamEnd("dad")
+                messagingService.sendToUser("Dad", alert)
+                continue
+            }
 
             // Save summary for context
             val summary = email.preview.take(300).ifBlank { "(no preview available)" }
@@ -131,6 +150,17 @@ class EmailPoller(
             }
         }
         return parts.joinToString("")
+    }
+
+    private val systemEmailPatterns = listOf(
+        "noreply@", "no-reply@", "mailer-daemon@", "postmaster@",
+        "@accountprotection.microsoft.com", "notifications@microsoft.com",
+        "member_services@outlook.com", "donotreply@", "do-not-reply@"
+    )
+
+    private fun isSystemEmail(from: String): Boolean {
+        val lower = from.lowercase()
+        return systemEmailPatterns.any { lower.contains(it) }
     }
 
     private fun stripHtml(html: String): String {
