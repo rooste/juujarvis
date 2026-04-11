@@ -149,7 +149,7 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
                 }
             } catch (e: Exception) {
                 log.error("Error streaming from Claude", e)
-                deliverAndSave(message, conversationId, "Sorry, I encountered an error: ${e.message}")
+                deliverResponse(message, "My brain seems to be on a Finnish holiday right now. Try again in a moment!")
                 return
             }
 
@@ -243,7 +243,9 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
             val handles = user.contacts
                 .filter { it.channelType == ChannelType.IMESSAGE }
                 .joinToString(", ") { it.address }
-            "- ${user.name} (${user.type})" + if (handles.isNotBlank()) " — $handles" else ""
+            val localTime = java.time.ZonedDateTime.now(user.timezone)
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+            "- ${user.name} (${user.type}, ${user.timezone}, local time: $localTime)" + if (handles.isNotBlank()) " — $handles" else ""
         }
 
         val conversationContext = when {
@@ -274,13 +276,19 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
         // Load profiles for participants in this conversation
         val relevantProfiles = buildRelevantProfiles(message)
 
-        val today = java.time.LocalDate.now(java.time.ZoneId.systemDefault())
+        val senderUser = userService.findByHandle(message.userId)
+        val senderTimezone = senderUser?.timezone ?: java.time.ZoneId.systemDefault()
+        val now = java.time.ZonedDateTime.now(senderTimezone)
+        val dateTime = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm (EEEE)"))
 
         return """$BASE_PROMPT
 
-Today's date: $today
+Current date and time: $dateTime ($senderTimezone)
 
 When creating calendar events, if a date appears to be in the past (e.g., a year that has already passed), assume the user means the next upcoming occurrence and adjust the year accordingly. Always confirm the date with the user if ambiguous.
+
+TIMEZONE AWARENESS:
+Each family member has a timezone on their profile. If someone mentions they have moved, are traveling, or are in a different timezone, update their timezone using the manage_user tool with the 'update' action and the 'timezone' parameter.
 
 Family members:
 $familyMembers$relevantProfiles

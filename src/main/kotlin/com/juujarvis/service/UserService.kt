@@ -4,6 +4,7 @@ import com.juujarvis.model.*
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import java.time.ZoneId
 
 @Service
 class UserService(private val conversationStore: ConversationStore) {
@@ -22,13 +23,15 @@ class UserService(private val conversationStore: ConversationStore) {
                     contacts = listOf(
                         ContactInterface(ChannelType.WEB_UI, "web-session"),
                         ContactInterface(ChannelType.IMESSAGE, "roose@iki.fi")
-                    )
+                    ),
+                    timezone = ZoneId.of("America/Chicago")
                 ),
                 User(
                     id = "mom", name = "Mom", type = UserType.MOM,
                     contacts = listOf(
                         ContactInterface(ChannelType.IMESSAGE, "saija.taavettila@iki.fi")
-                    )
+                    ),
+                    timezone = ZoneId.of("America/Chicago")
                 )
             )
             defaults.forEach { user ->

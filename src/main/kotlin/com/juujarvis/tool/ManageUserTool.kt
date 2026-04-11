@@ -6,6 +6,7 @@ import com.juujarvis.model.*
 import com.juujarvis.service.UserService
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
+import java.time.ZoneId
 
 @Component
 class ManageUserTool(private val userService: UserService) : JuujarvisTool {
@@ -51,6 +52,10 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                                 "phone" to mapOf(
                                     "type" to "string",
                                     "description" to "Phone number for SMS"
+                                ),
+                                "timezone" to mapOf(
+                                    "type" to "string",
+                                    "description" to "IANA timezone ID (e.g., 'America/Los_Angeles', 'Europe/Helsinki'). Update this when a user indicates they have moved or are in a different timezone."
                                 )
                             )
                         )
@@ -71,7 +76,7 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                 if (users.isEmpty()) return "No users registered"
                 users.joinToString("\n") { u ->
                     val contacts = u.contacts.joinToString(", ") { "${it.channelType}: ${it.address}" }
-                    "- ${u.name} (${u.type}) — $contacts"
+                    "- ${u.name} (${u.type}, ${u.timezone}) — $contacts"
                 }
             }
 
@@ -99,8 +104,9 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                 }
 
                 val contacts = buildContacts(arguments)
+                val tz = parseTimezone(arguments)
                 val userId = personName.lowercase().replace(" ", "-")
-                val user = User(id = userId, name = personName, type = userType, contacts = contacts)
+                val user = User(id = userId, name = personName, type = userType, contacts = contacts, timezone = tz ?: ZoneId.systemDefault())
                 userService.addUser(user)
                 log.info("Added user: {} ({}) with {} contacts", personName, userType, contacts.size)
 
@@ -124,7 +130,8 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                 contacts.addAll(existing.contacts)
                 mergeContacts(contacts, arguments)
 
-                val user = User(id = existing.id, name = personName, type = userType, contacts = contacts)
+                val tz = parseTimezone(arguments) ?: existing.timezone
+                val user = User(id = existing.id, name = personName, type = userType, contacts = contacts, timezone = tz)
                 userService.addUser(user)
                 log.info("Updated user: {} ({}) with {} contacts", personName, userType, contacts.size)
 
@@ -164,6 +171,15 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
         (arguments["email"] as? String)?.let { contacts.add(ContactInterface(ChannelType.EMAIL, it)) }
         (arguments["phone"] as? String)?.let { contacts.add(ContactInterface(ChannelType.SMS, it)) }
         return contacts
+    }
+
+    private fun parseTimezone(arguments: Map<String, Any?>): ZoneId? {
+        val tz = arguments["timezone"] as? String ?: return null
+        return try {
+            ZoneId.of(tz)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun mergeContacts(contacts: MutableList<ContactInterface>, arguments: Map<String, Any?>) {

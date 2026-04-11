@@ -96,6 +96,7 @@ class ConversationStore(
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
                         type TEXT NOT NULL,
+                        timezone TEXT,
                         created_at TEXT NOT NULL
                     )
                 """.trimIndent())
@@ -120,6 +121,13 @@ class ConversationStore(
                     )
                 """.trimIndent())
                 s.execute("CREATE INDEX IF NOT EXISTS idx_reminder_send ON scheduled_reminder(send_at, sent)")
+
+                // Migrate: add timezone column to existing databases
+                try {
+                    s.execute("ALTER TABLE family_user ADD COLUMN timezone TEXT")
+                } catch (_: Exception) {
+                    // Column already exists — ignore
+                }
             }
         }
         log.info("Conversation store initialized at {}", dbPath)
@@ -287,15 +295,17 @@ class ConversationStore(
     fun saveUser(user: com.juujarvis.model.User) {
         connection().use { conn ->
             conn.prepareStatement(
-                "INSERT INTO family_user (id, name, type, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = ?, type = ?"
+                "INSERT INTO family_user (id, name, type, timezone, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = ?, type = ?, timezone = ?"
             ).use { stmt ->
                 val now = Instant.now().toString()
                 stmt.setString(1, user.id)
                 stmt.setString(2, user.name)
                 stmt.setString(3, user.type.name)
-                stmt.setString(4, now)
-                stmt.setString(5, user.name)
-                stmt.setString(6, user.type.name)
+                stmt.setString(4, user.timezone.id)
+                stmt.setString(5, now)
+                stmt.setString(6, user.name)
+                stmt.setString(7, user.type.name)
+                stmt.setString(8, user.timezone.id)
                 stmt.executeUpdate()
             }
             // Replace contacts
@@ -318,15 +328,17 @@ class ConversationStore(
         return connection().use { conn ->
             val users = mutableListOf<com.juujarvis.model.User>()
             conn.createStatement().use { s ->
-                val rs = s.executeQuery("SELECT id, name, type FROM family_user ORDER BY name")
+                val rs = s.executeQuery("SELECT id, name, type, timezone FROM family_user ORDER BY name")
                 while (rs.next()) {
                     val userId = rs.getString("id")
                     val contacts = loadContactsForUser(conn, userId)
+                    val tz = rs.getString("timezone")
                     users += com.juujarvis.model.User(
                         id = userId,
                         name = rs.getString("name"),
                         type = com.juujarvis.model.UserType.valueOf(rs.getString("type")),
-                        contacts = contacts
+                        contacts = contacts,
+                        timezone = if (tz != null) ZoneId.of(tz) else ZoneId.systemDefault()
                     )
                 }
             }
