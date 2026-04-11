@@ -2,12 +2,18 @@ package com.juujarvis.tool
 
 import com.anthropic.core.JsonValue
 import com.anthropic.models.messages.Tool
+import com.juujarvis.service.ConversationStore
+import com.juujarvis.service.EmailAttachmentService
 import com.juujarvis.service.OutlookEmailService
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 
 @Component
-class EmailTool(private val emailService: OutlookEmailService) : JuujarvisTool {
+class EmailTool(
+    private val emailService: OutlookEmailService,
+    private val conversationStore: ConversationStore,
+    private val emailAttachmentService: EmailAttachmentService
+) : JuujarvisTool {
 
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -86,7 +92,39 @@ class EmailTool(private val emailService: OutlookEmailService) : JuujarvisTool {
                 log.info("Reading email {}", messageId)
                 val email = emailService.readEmail(messageId)
                     ?: return "Could not read email with ID: $messageId"
-                "From: ${email.from}\nSubject: ${email.subject}\nReceived: ${email.receivedAt}\n\n${email.body}"
+
+                // Fetch and save attachments so zoom_image can access them
+                val attachments = emailAttachmentService.getAttachments(messageId)
+                val attachmentInfo = attachments.mapNotNull { att ->
+                    when {
+                        att.isImage -> {
+                            val result = emailAttachmentService.saveAndPreview(att)
+                            if (result != null) {
+                                val dims = emailAttachmentService.getImageDimensions(result.first)
+                                val dimsText = dims?.let { "${it.first}x${it.second}px" } ?: "unknown size"
+                                "Image: ${att.name} (id=${result.first}, $dimsText) — use zoom_image to inspect details\n[IMAGE_BASE64:image/jpeg:${result.second}]"
+                            } else null
+                        }
+                        att.isPdf -> {
+                            val text = emailAttachmentService.extractPdfText(att)
+                            if (text.isNotBlank()) "PDF: ${att.name}\n${text.take(3000)}" else null
+                        }
+                        else -> null
+                    }
+                }
+                val attachmentText = if (attachmentInfo.isNotEmpty()) {
+                    "\n\n--- Attachments ---\n${attachmentInfo.joinToString("\n\n")}"
+                } else ""
+
+                val cleanBody = email.body
+                    .replace(Regex("src=\"data:image/[^\"]+\"", RegexOption.IGNORE_CASE), "src=\"[inline-image]\"")
+                    .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+                    .replace(Regex("<[^>]+>"), "")
+                    .replace("&nbsp;", " ").replace("&amp;", "&")
+                    .replace("&lt;", "<").replace("&gt;", ">")
+                    .trim().take(3000)
+
+                "From: ${email.from}\nSubject: ${email.subject}\nReceived: ${email.receivedAt}\n\n$cleanBody$attachmentText"
             }
 
             "send" -> {

@@ -123,11 +123,11 @@ If you cannot extract the data clearly, ask Dad to clarify rather than guessing.
             )
         }
 
-        // Add the current message
+        // Add the current message (with multimodal support for images)
         conversationMessages.add(
             MessageParam.builder()
                 .role(MessageParam.Role.USER)
-                .content(MessageParam.Content.ofString(userText))
+                .content(MessageParam.Content.ofBlockParams(buildContentBlocks(userText)))
                 .build()
         )
 
@@ -243,10 +243,7 @@ If you cannot extract the data clearly, ask Dad to clarify rather than guessing.
 
                 toolResults.add(
                     ContentBlockParam.ofToolResult(
-                        ToolResultBlockParam.builder()
-                            .toolUseId(toolId)
-                            .content(ToolResultBlockParam.Content.ofString(result))
-                            .build()
+                        buildToolResultWithImages(toolId, result)
                     )
                 )
             }
@@ -530,5 +527,123 @@ $conversationContext$summaryContext"""
             log.warn("Failed to parse tool arguments: {}", e.message)
             emptyMap()
         }
+    }
+
+    private val imageMarkerPattern = Regex("""\[IMAGE_BASE64:([^:]+):([^\]]+)]""")
+
+    /**
+     * Parse text that may contain [IMAGE_BASE64:mediaType:data] markers
+     * and build a list of content blocks (text + native image blocks).
+     */
+    private fun buildContentBlocks(text: String): List<ContentBlockParam> {
+        val blocks = mutableListOf<ContentBlockParam>()
+        var lastEnd = 0
+
+        for (match in imageMarkerPattern.findAll(text)) {
+            // Add text before this image
+            val textBefore = text.substring(lastEnd, match.range.first).trim()
+            if (textBefore.isNotBlank()) {
+                blocks.add(ContentBlockParam.ofText(
+                    TextBlockParam.builder().text(textBefore).build()
+                ))
+            }
+
+            val mediaType = match.groupValues[1]
+            val base64Data = match.groupValues[2]
+            val sourceMediaType = when {
+                mediaType.contains("png") -> Base64ImageSource.MediaType.IMAGE_PNG
+                mediaType.contains("gif") -> Base64ImageSource.MediaType.IMAGE_GIF
+                mediaType.contains("webp") -> Base64ImageSource.MediaType.IMAGE_WEBP
+                else -> Base64ImageSource.MediaType.IMAGE_JPEG
+            }
+
+            blocks.add(ContentBlockParam.ofImage(
+                ImageBlockParam.builder()
+                    .source(ImageBlockParam.Source.ofBase64(
+                        Base64ImageSource.builder()
+                            .mediaType(sourceMediaType)
+                            .data(base64Data)
+                            .build()
+                    ))
+                    .build()
+            ))
+
+            lastEnd = match.range.last + 1
+        }
+
+        // Add remaining text after last image
+        val remaining = text.substring(lastEnd).trim()
+        if (remaining.isNotBlank()) {
+            blocks.add(ContentBlockParam.ofText(
+                TextBlockParam.builder().text(remaining).build()
+            ))
+        }
+
+        // If no images found, just return the text as-is
+        if (blocks.isEmpty()) {
+            blocks.add(ContentBlockParam.ofText(
+                TextBlockParam.builder().text(text).build()
+            ))
+        }
+
+        return blocks
+    }
+
+    /**
+     * Build a tool result that may contain images as native image blocks.
+     */
+    private fun buildToolResultWithImages(toolId: String, result: String): ToolResultBlockParam {
+        if (!result.contains("[IMAGE_BASE64:")) {
+            return ToolResultBlockParam.builder()
+                .toolUseId(toolId)
+                .content(ToolResultBlockParam.Content.ofString(result))
+                .build()
+        }
+
+        val blocks = mutableListOf<ToolResultBlockParam.Content.Block>()
+        var lastEnd = 0
+
+        for (match in imageMarkerPattern.findAll(result)) {
+            val textBefore = result.substring(lastEnd, match.range.first).trim()
+            if (textBefore.isNotBlank()) {
+                blocks.add(ToolResultBlockParam.Content.Block.ofText(
+                    TextBlockParam.builder().text(textBefore).build()
+                ))
+            }
+
+            val mediaType = match.groupValues[1]
+            val base64Data = match.groupValues[2]
+            val sourceMediaType = when {
+                mediaType.contains("png") -> Base64ImageSource.MediaType.IMAGE_PNG
+                mediaType.contains("gif") -> Base64ImageSource.MediaType.IMAGE_GIF
+                mediaType.contains("webp") -> Base64ImageSource.MediaType.IMAGE_WEBP
+                else -> Base64ImageSource.MediaType.IMAGE_JPEG
+            }
+
+            blocks.add(ToolResultBlockParam.Content.Block.ofImage(
+                ImageBlockParam.builder()
+                    .source(ImageBlockParam.Source.ofBase64(
+                        Base64ImageSource.builder()
+                            .mediaType(sourceMediaType)
+                            .data(base64Data)
+                            .build()
+                    ))
+                    .build()
+            ))
+
+            lastEnd = match.range.last + 1
+        }
+
+        val remaining = result.substring(lastEnd).trim()
+        if (remaining.isNotBlank()) {
+            blocks.add(ToolResultBlockParam.Content.Block.ofText(
+                TextBlockParam.builder().text(remaining).build()
+            ))
+        }
+
+        return ToolResultBlockParam.builder()
+            .toolUseId(toolId)
+            .content(ToolResultBlockParam.Content.ofBlocks(blocks))
+            .build()
     }
 }

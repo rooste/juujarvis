@@ -131,8 +131,18 @@ class EmailPoller(
     private fun buildAttachmentText(attachments: List<EmailAttachmentService.Attachment>): String {
         if (attachments.isEmpty()) return ""
 
+        // Filter out tiny images (logos, tracking pixels, signatures)
+        val meaningful = attachments.filter { att ->
+            if (att.isImage && att.contentBytes.size < 10_000) {
+                log.debug("Skipping tiny image (likely logo/pixel): {} ({} bytes)", att.name, att.contentBytes.size)
+                false
+            } else true
+        }
+        if (meaningful.isEmpty()) return ""
+
         val parts = mutableListOf<String>()
-        for (att in attachments) {
+
+        for (att in meaningful) {
             when {
                 att.isPdf -> {
                     val text = emailAttachmentService.extractPdfText(att)
@@ -142,10 +152,13 @@ class EmailPoller(
                     log.info("Processed PDF attachment: {} ({} chars)", att.name, text.length)
                 }
                 att.isImage -> {
-                    // Include base64 image reference for Claude to analyze
-                    val base64 = emailAttachmentService.imageToBase64(att)
-                    parts += "\n\n--- Attachment: ${att.name} (Image) ---\n[IMAGE_BASE64:${att.contentType}:$base64]"
-                    log.info("Processed image attachment: {} ({} bytes)", att.name, att.contentBytes.size)
+                    val result = emailAttachmentService.saveAndPreview(att)
+                    if (result != null) {
+                        val (imageId, base64) = result
+                        val dims = emailAttachmentService.getImageDimensions(imageId)
+                        val dimsText = dims?.let { "Full size: ${it.first}x${it.second}px." } ?: ""
+                        parts += "\n\n--- Attachment: ${att.name} (Image, id=$imageId) ---\n$dimsText Use zoom_image tool with this id to read specific areas in detail.\n[IMAGE_BASE64:image/jpeg:$base64]"
+                    }
                 }
             }
         }
@@ -165,6 +178,8 @@ class EmailPoller(
 
     private fun stripHtml(html: String): String {
         return html
+            // Remove inline base64 image data (can be huge)
+            .replace(Regex("src=\"data:image/[^\"]+\"", RegexOption.IGNORE_CASE), "src=\"[inline-image]\"")
             .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("<[^>]+>"), "")
             .replace("&nbsp;", " ")

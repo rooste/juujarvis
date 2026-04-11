@@ -46,6 +46,7 @@ secrets/
 # Runtime data
 juujarvis.db
 logs/
+temp-images/
 
 # OS
 .DS_Store
