@@ -26,7 +26,7 @@ class OutlookEmailService(
 
         return try {
             val response = restClient.get()
-                .uri("/me/mailFolders/$folder/messages?\$top=$count&\$orderby=receivedDateTime desc&\$select=subject,from,receivedDateTime,bodyPreview,isRead")
+                .uri("/me/mailFolders/$folder/messages?\$top=$count&\$orderby=receivedDateTime desc&\$select=subject,from,toRecipients,receivedDateTime,bodyPreview,isRead")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer $token")
                 .retrieve()
                 .body(String::class.java)
@@ -35,6 +35,9 @@ class OutlookEmailService(
             val messages = json.get("value") ?: return emptyList()
 
             messages.map { msg ->
+                val recipients = msg.get("toRecipients")?.mapNotNull {
+                    it.get("emailAddress")?.get("address")?.asText()
+                } ?: emptyList()
                 EmailSummary(
                     id = msg.get("id")?.asText() ?: "",
                     subject = msg.get("subject")?.asText() ?: "(no subject)",
@@ -42,7 +45,8 @@ class OutlookEmailService(
                     fromName = msg.get("from")?.get("emailAddress")?.get("name")?.asText(),
                     receivedAt = msg.get("receivedDateTime")?.asText() ?: "",
                     preview = msg.get("bodyPreview")?.asText() ?: "",
-                    isRead = msg.get("isRead")?.asBoolean() ?: false
+                    isRead = msg.get("isRead")?.asBoolean() ?: false,
+                    toRecipients = recipients
                 )
             }
         } catch (e: Exception) {
@@ -62,12 +66,16 @@ class OutlookEmailService(
                 .body(String::class.java)
 
             val msg = objectMapper.readTree(response)
+            val recipients = msg.get("toRecipients")?.mapNotNull {
+                it.get("emailAddress")?.get("address")?.asText()
+            } ?: emptyList()
             EmailDetail(
                 id = msg.get("id")?.asText() ?: "",
                 subject = msg.get("subject")?.asText() ?: "(no subject)",
                 from = msg.get("from")?.get("emailAddress")?.get("address")?.asText() ?: "unknown",
                 body = msg.get("body")?.get("content")?.asText() ?: "",
-                receivedAt = msg.get("receivedDateTime")?.asText() ?: ""
+                receivedAt = msg.get("receivedDateTime")?.asText() ?: "",
+                toRecipients = recipients
             )
         } catch (e: Exception) {
             log.error("Failed to read email {}: {}", messageId, e.message)
@@ -117,7 +125,8 @@ class OutlookEmailService(
         val fromName: String?,
         val receivedAt: String,
         val preview: String,
-        val isRead: Boolean
+        val isRead: Boolean,
+        val toRecipients: List<String> = emptyList()
     )
 
     data class EmailDetail(
@@ -125,6 +134,7 @@ class OutlookEmailService(
         val subject: String,
         val from: String,
         val body: String,
-        val receivedAt: String
+        val receivedAt: String,
+        val toRecipients: List<String> = emptyList()
     )
 }

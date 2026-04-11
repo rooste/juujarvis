@@ -112,7 +112,9 @@ class EmailPoller(
             val attachments = emailAttachmentService.getAttachments(email.id)
             val attachmentText = buildAttachmentText(attachments)
 
-            val messageText = "Email from: ${email.fromName ?: email.from} <${email.from}>\nSubject: ${email.subject}\n\n$bodyText$attachmentText"
+            val otherRecipients = email.toRecipients.filter { !it.equals("juujarvis@outlook.com", ignoreCase = true) }
+            val recipientsLine = if (otherRecipients.isNotEmpty()) "\nOther recipients: ${otherRecipients.joinToString(", ")}" else ""
+            val messageText = "Email from: ${email.fromName ?: email.from} <${email.from}>\nSubject: ${email.subject}$recipientsLine\n\n$bodyText$attachmentText"
 
             val incoming = IncomingMessage(
                 userId = email.from,

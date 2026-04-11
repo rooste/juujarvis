@@ -11,7 +11,7 @@ juujarvis:
     own-handles: juujarvis@outlook.com
   anthropic:
     api-key: ${ANTHROPIC_API_KEY:}
-    model: claude-haiku-4-5-20251001
+    model: claude-sonnet-4-6
   confluence:
     base-url: ${CONFLUENCE_BASE_URL:}
     email: ${CONFLUENCE_EMAIL:}

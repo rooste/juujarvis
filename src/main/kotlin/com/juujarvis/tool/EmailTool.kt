@@ -33,8 +33,8 @@ class EmailTool(
                             mapOf(
                                 "action" to mapOf(
                                     "type" to "string",
-                                    "enum" to listOf("read_inbox", "read_message", "send"),
-                                    "description" to "Action: read_inbox (list recent emails), read_message (read full email by ID), send (send an email)"
+                                    "enum" to listOf("read_inbox", "read_message", "send", "reply_all"),
+                                    "description" to "Action: read_inbox (list recent emails), read_message (read full email by ID), send (send to one address), reply_all (reply to sender AND all recipients of an email by message_id)"
                                 ),
                                 "count" to mapOf(
                                     "type" to "integer",
@@ -137,7 +137,35 @@ class EmailTool(
                 else "Failed to send email to $to"
             }
 
-            else -> "Unknown action: $action. Use read_inbox, read_message, or send."
+            "reply_all" -> {
+                val messageId = arguments["message_id"] as? String
+                    ?: return "Error: message_id is required for reply_all"
+                val body = arguments["body"] as? String
+                    ?: return "Error: body is required for reply_all"
+
+                // Fetch the original email to get sender and recipients
+                val original = emailService.readEmail(messageId)
+                    ?: return "Error: could not read original email with ID: $messageId"
+
+                val subject = if (original.subject.startsWith("Re:", ignoreCase = true)) original.subject else "Re: ${original.subject}"
+
+                // Collect all addresses to reply to: sender + other recipients, excluding ourselves
+                val allRecipients = mutableSetOf<String>()
+                allRecipients.add(original.from)
+                allRecipients.addAll(original.toRecipients)
+                allRecipients.removeAll { it.equals("juujarvis@outlook.com", ignoreCase = true) }
+
+                if (allRecipients.isEmpty()) return "Error: no recipients to reply to"
+
+                log.info("Reply-all to {} recipients: {}", allRecipients.size, allRecipients)
+                val results = allRecipients.map { addr ->
+                    val sent = emailService.sendEmail(addr, subject, body)
+                    "$addr: ${if (sent) "sent" else "FAILED"}"
+                }
+                "Reply-all with subject '$subject':\n${results.joinToString("\n")}"
+            }
+
+            else -> "Unknown action: $action. Use read_inbox, read_message, send, or reply_all."
         }
     }
 }

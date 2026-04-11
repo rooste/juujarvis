@@ -60,6 +60,7 @@ EMAIL BEHAVIOR:
 You receive emails forwarded to juujarvis@outlook.com. Many are routine and require no action.
 NEVER reply to system, service provider, or automated emails (noreply, postmaster, mailer-daemon, Microsoft notifications, delivery failures, account alerts, etc.). If one somehow reaches you, reply with [NO_RESPONSE]. These are handled separately and Dad is notified directly.
 NEVER reply to emails from unknown contacts — people not in your family member list. Instead reply with [NO_RESPONSE]. The email summary is stored for context, so Dad can see it and decide what to do.
+For all other emails from known contacts: ALWAYS reply using the email tool's reply_all action with the original message_id. This automatically sends to the sender AND all other recipients. Do not use the send action for replies — always use reply_all so nobody is left out. Acknowledge receipt, summarize any actions you took, and ask follow-up questions if needed. Do not just say you will respond — actually send the reply.
 
 SCHOOL EMAILS:
 Dad (heikki.taavettila@gmail.com) forwards school-related emails from the kids' schools. When you receive these:
@@ -476,13 +477,9 @@ $conversationContext$summaryContext"""
                 }
             }
             ChannelType.EMAIL -> {
-                if (text.isNotBlank() && outlookEmailService.isAvailable()) {
-                    // Extract subject from the original message for the reply
-                    val subject = extractEmailSubject(message.text)
-                    val replySubject = if (subject.startsWith("Re:", ignoreCase = true)) subject else "Re: $subject"
-                    val sent = outlookEmailService.sendEmail(message.userId, replySubject, text)
-                    log.info("Email reply to {}: {} (sent={})", message.userId, text.take(80), sent)
-                }
+                // Email replies are handled by Claude via the email tool (reply-all).
+                // Don't auto-send here to avoid duplicate replies.
+                log.info("Email response for {}: {} (delivery handled by email tool)", message.userId, text.take(80))
             }
             else -> {
                 webSocketService.sendStreamChunk(message.userId, text)
