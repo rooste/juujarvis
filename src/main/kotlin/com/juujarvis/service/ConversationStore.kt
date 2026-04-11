@@ -48,6 +48,16 @@ data class ScheduledReminder(
     val sendAt: Instant
 )
 
+data class JuujarvisTask(
+    val id: Long = 0,
+    val title: String,
+    val description: String? = null,
+    val assignedTo: String? = null,
+    val status: String = "open",
+    val createdAt: Instant = Instant.now(),
+    val completedAt: Instant? = null
+)
+
 @Component
 class ConversationStore(
     @Value("\${juujarvis.db-path:juujarvis.db}")
@@ -121,6 +131,18 @@ class ConversationStore(
                     )
                 """.trimIndent())
                 s.execute("CREATE INDEX IF NOT EXISTS idx_reminder_send ON scheduled_reminder(send_at, sent)")
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS juujarvis_task (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        assigned_to TEXT,
+                        status TEXT NOT NULL DEFAULT 'open',
+                        created_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )
+                """.trimIndent())
+                s.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON juujarvis_task(status)")
 
                 // Migrate: add timezone column to existing databases
                 try {
@@ -461,6 +483,105 @@ class ConversationStore(
                 stmt.executeUpdate()
             }
         }
+    }
+
+    // ── Tasks ──
+
+    fun saveTask(task: JuujarvisTask): Long {
+        return connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT INTO juujarvis_task (title, description, assigned_to, status, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                java.sql.Statement.RETURN_GENERATED_KEYS
+            ).use { stmt ->
+                stmt.setString(1, task.title)
+                stmt.setString(2, task.description)
+                stmt.setString(3, task.assignedTo)
+                stmt.setString(4, task.status)
+                stmt.setString(5, task.createdAt.toString())
+                stmt.setString(6, task.completedAt?.toString())
+                stmt.executeUpdate()
+                val rs = stmt.generatedKeys
+                if (rs.next()) rs.getLong(1) else 0L
+            }
+        }
+    }
+
+    fun loadTasksByStatus(status: String): List<JuujarvisTask> {
+        return connection().use { conn ->
+            conn.prepareStatement(
+                "SELECT id, title, description, assigned_to, status, created_at, completed_at FROM juujarvis_task WHERE status = ? ORDER BY created_at ASC"
+            ).use { stmt ->
+                stmt.setString(1, status)
+                val rs = stmt.executeQuery()
+                val tasks = mutableListOf<JuujarvisTask>()
+                while (rs.next()) {
+                    tasks += readTask(rs)
+                }
+                tasks
+            }
+        }
+    }
+
+    fun loadAllTasks(): List<JuujarvisTask> {
+        return connection().use { conn ->
+            conn.createStatement().use { s ->
+                val rs = s.executeQuery("SELECT id, title, description, assigned_to, status, created_at, completed_at FROM juujarvis_task ORDER BY created_at ASC")
+                val tasks = mutableListOf<JuujarvisTask>()
+                while (rs.next()) {
+                    tasks += readTask(rs)
+                }
+                tasks
+            }
+        }
+    }
+
+    fun completeTask(id: Long) {
+        connection().use { conn ->
+            conn.prepareStatement(
+                "UPDATE juujarvis_task SET status = 'completed', completed_at = ? WHERE id = ?"
+            ).use { stmt ->
+                stmt.setString(1, Instant.now().toString())
+                stmt.setLong(2, id)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    fun updateTask(id: Long, title: String?, description: String?, assignedTo: String?, status: String?) {
+        connection().use { conn ->
+            val sets = mutableListOf<String>()
+            val values = mutableListOf<Any?>()
+            title?.let { sets += "title = ?"; values += it }
+            description?.let { sets += "description = ?"; values += it }
+            assignedTo?.let { sets += "assigned_to = ?"; values += it }
+            status?.let {
+                sets += "status = ?"
+                values += it
+                if (it == "completed") {
+                    sets += "completed_at = ?"
+                    values += Instant.now().toString()
+                }
+            }
+            if (sets.isEmpty()) return
+            conn.prepareStatement("UPDATE juujarvis_task SET ${sets.joinToString(", ")} WHERE id = ?").use { stmt ->
+                values.forEachIndexed { i, v -> stmt.setString(i + 1, v as String) }
+                stmt.setLong(values.size + 1, id)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    private fun readTask(rs: java.sql.ResultSet): JuujarvisTask {
+        val completedStr = rs.getString("completed_at")
+        return JuujarvisTask(
+            id = rs.getLong("id"),
+            title = rs.getString("title"),
+            description = rs.getString("description"),
+            assignedTo = rs.getString("assigned_to"),
+            status = rs.getString("status"),
+            createdAt = Instant.parse(rs.getString("created_at")),
+            completedAt = if (completedStr != null) Instant.parse(completedStr) else null
+        )
     }
 
     private fun connection() = DriverManager.getConnection(jdbcUrl).also { conn ->

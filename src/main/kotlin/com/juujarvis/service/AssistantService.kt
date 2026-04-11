@@ -281,6 +281,16 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
         val now = java.time.ZonedDateTime.now(senderTimezone)
         val dateTime = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm (EEEE)"))
 
+        val openTasks = conversationStore.loadTasksByStatus("open")
+        val taskContext = if (openTasks.isNotEmpty()) {
+            val taskLines = openTasks.joinToString("\n") { t ->
+                val assigned = t.assignedTo?.let { " → $it" } ?: ""
+                val desc = t.description?.let { " — $it" } ?: ""
+                "#${t.id}: ${t.title}$assigned$desc"
+            }
+            "\n\nOPEN TASKS:\n$taskLines"
+        } else ""
+
         return """$BASE_PROMPT
 
 Current date and time: $dateTime ($senderTimezone)
@@ -290,11 +300,59 @@ When creating calendar events, if a date appears to be in the past (e.g., a year
 TIMEZONE AWARENESS:
 Each family member has a timezone on their profile. If someone mentions they have moved, are traveling, or are in a different timezone, update their timezone using the manage_user tool with the 'update' action and the 'timezone' parameter.
 
+TASK TRACKING:
+You have a task list. When someone asks you to do something that can't be done immediately (e.g., "remind me to follow up", "look into X", "we need to plan Y"), create a task using manage_task. When a conversation relates to an existing open task, mention it and update or complete it as appropriate. Periodically review open tasks and proactively bring up ones that may need attention.$taskContext
+
 Family members:
 $familyMembers$relevantProfiles
-
+${buildGroupChatContext()}
 Current conversation:
 $conversationContext$summaryContext"""
+    }
+
+    private fun buildGroupChatContext(): String {
+        val groups = discoverGroupChats()
+        if (groups.isEmpty()) return ""
+        val lines = groups.joinToString("\n") { (name, members) ->
+            "- $name: ${members.joinToString(", ")}"
+        }
+        return "\nKnown group chats (use send_message with group_members to send to these):\n$lines\n"
+    }
+
+    /**
+     * Discover group chats directly from iMessage's chat.db,
+     * resolving handles to family member names.
+     */
+    private fun discoverGroupChats(): List<Pair<String, List<String>>> {
+        val dbPath = System.getProperty("user.home") + "/Library/Messages/chat.db"
+        return try {
+            java.sql.DriverManager.getConnection("jdbc:sqlite:$dbPath").use { conn ->
+                val groups = mutableListOf<Pair<String, List<String>>>()
+                conn.createStatement().use { s ->
+                    val rs = s.executeQuery("SELECT ROWID, display_name FROM chat WHERE style = 43")
+                    while (rs.next()) {
+                        val chatRowId = rs.getLong("ROWID")
+                        val displayName = rs.getString("display_name")
+                        val handles = mutableListOf<String>()
+                        conn.prepareStatement(
+                            "SELECT h.id FROM handle h JOIN chat_handle_join chj ON chj.handle_id = h.ROWID WHERE chj.chat_id = ?"
+                        ).use { stmt ->
+                            stmt.setLong(1, chatRowId)
+                            val hrs = stmt.executeQuery()
+                            while (hrs.next()) handles += hrs.getString("id")
+                        }
+                        val memberNames = handles.map { handle ->
+                            userService.findByHandle(handle)?.name ?: handle
+                        }
+                        val label = displayName?.let { "'$it'" } ?: "unnamed"
+                        groups += label to memberNames
+                    }
+                }
+                groups
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     private fun buildRelevantProfiles(message: IncomingMessage): String {

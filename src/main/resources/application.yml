@@ -16,6 +16,8 @@ juujarvis:
     base-url: ${CONFLUENCE_BASE_URL:}
     email: ${CONFLUENCE_EMAIL:}
     api-token: ${CONFLUENCE_API_TOKEN:}
+  brave:
+    api-key: ${BRAVE_API_KEY:}
   google:
     credentials-path: secrets/google-credentials.json
     tokens-path: secrets/google-tokens

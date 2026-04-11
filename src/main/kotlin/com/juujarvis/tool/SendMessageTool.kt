@@ -17,9 +17,10 @@ class SendMessageTool(private val messagingService: MessagingService) : Juujarvi
         return Tool.builder()
             .name(name)
             .description(
-                "Send a message to a family member. Use this when someone asks to notify, " +
-                "remind, or contact another family member. The message will be delivered " +
-                "through their preferred channel (iMessage, Signal, email, etc.)."
+                "Send a message to a family member or a group chat. " +
+                "For individual messages, use 'recipient'. " +
+                "For group chats, use 'group_members' with the names of the people in the group. " +
+                "PREFER sending to a group when the message is relevant to multiple people and a matching group exists."
             )
             .inputSchema(
                 Tool.InputSchema.builder()
@@ -28,7 +29,12 @@ class SendMessageTool(private val messagingService: MessagingService) : Juujarvi
                             mapOf(
                                 "recipient" to mapOf(
                                     "type" to "string",
-                                    "description" to "Name or role of the recipient (e.g., 'Mom', 'kids', 'everyone')"
+                                    "description" to "Name of an individual recipient (e.g., 'Mom', 'Dad'). Use this for 1-on-1 messages."
+                                ),
+                                "group_members" to mapOf(
+                                    "type" to "array",
+                                    "items" to mapOf("type" to "string"),
+                                    "description" to "Names of the group members to identify the group chat (e.g., ['Dad', 'Mom']). Use this to send to a group chat."
                                 ),
                                 "message" to mapOf(
                                     "type" to "string",
@@ -37,17 +43,28 @@ class SendMessageTool(private val messagingService: MessagingService) : Juujarvi
                             )
                         )
                     )
-                    .required(JsonValue.from(listOf("recipient", "message")))
+                    .required(JsonValue.from(listOf("message")))
                     .build()
             )
             .build()
     }
 
+    @Suppress("UNCHECKED_CAST")
     override fun execute(arguments: Map<String, Any?>): String {
-        val recipient = arguments["recipient"] as? String ?: return "Error: recipient is required"
         val message = arguments["message"] as? String ?: return "Error: message is required"
+        val groupMembers = arguments["group_members"] as? List<String>
+        val recipient = arguments["recipient"] as? String
 
-        log.info("SendMessage tool: to={}", recipient)
-        return messagingService.sendToUser(recipient, message)
+        if (groupMembers != null && groupMembers.isNotEmpty()) {
+            log.info("SendMessage tool: to group with members={}", groupMembers)
+            return messagingService.sendToGroup(groupMembers, message)
+        }
+
+        if (recipient != null) {
+            log.info("SendMessage tool: to={}", recipient)
+            return messagingService.sendToUser(recipient, message)
+        }
+
+        return "Error: either 'recipient' or 'group_members' is required"
     }
 }
