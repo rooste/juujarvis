@@ -30,47 +30,51 @@ class IMessageProvider : MessagingProvider {
     private val appleEpochOffset = 978307200L
 
     override fun send(to: String, message: String): Boolean {
-        val safeMessage = message.replace("\\", "\\\\").replace("\"", "\\\"")
+        val safeTo = escapeForAppleScript(to)
+        val safeMessage = escapeForAppleScript(message)
         val script = """
             tell application "Messages"
                 set targetService to 1st service whose service type = iMessage
-                set targetBuddy to buddy "$to" of targetService
+                set targetBuddy to buddy "$safeTo" of targetService
                 send "$safeMessage" to targetBuddy
             end tell
         """.trimIndent()
 
-        return try {
-            val result = ProcessBuilder("osascript", "-e", script)
-                .redirectErrorStream(true)
-                .start()
-                .waitFor()
-            result == 0
-        } catch (e: Exception) {
-            log.error("Failed to send iMessage to {}: {}", to, e.message)
-            false
-        }
+        return runAppleScript(script, "send to $to")
     }
 
     override fun sendToChat(chatId: String, message: String): Boolean {
-        val safeMessage = message.replace("\\", "\\\\").replace("\"", "\\\"")
+        val safeChatId = escapeForAppleScript(chatId)
+        val safeMessage = escapeForAppleScript(message)
         val script = """
             tell application "Messages"
-                set targetChat to chat id "$chatId"
+                set targetChat to chat id "$safeChatId"
                 send "$safeMessage" to targetChat
             end tell
         """.trimIndent()
 
+        return runAppleScript(script, "send to chat $chatId")
+    }
+
+    private fun runAppleScript(script: String, description: String): Boolean {
         return try {
-            val result = ProcessBuilder("osascript", "-e", script)
+            val process = ProcessBuilder("osascript", "-e", script)
                 .redirectErrorStream(true)
                 .start()
-                .waitFor()
-            result == 0
+            val output = process.inputStream.bufferedReader().readText().trim()
+            val exitCode = process.waitFor()
+            if (exitCode != 0) {
+                log.error("AppleScript failed for '{}': exit={}, output={}", description, exitCode, output)
+            }
+            exitCode == 0
         } catch (e: Exception) {
-            log.error("Failed to send iMessage to chat {}: {}", chatId, e.message)
+            log.error("Failed to run AppleScript for '{}': {}", description, e.message)
             false
         }
     }
+
+    private fun escapeForAppleScript(s: String): String =
+        s.replace("\\", "\\\\").replace("\"", "\\\"")
 
     override fun getMessages(withContact: String?, limit: Int): List<ChatMessage> {
         return try {

@@ -53,3 +53,27 @@ tasks.withType<Test> {
 tasks.named<org.springframework.boot.gradle.tasks.run.BootRun>("bootRun") {
     args("--spring.profiles.active=local")
 }
+
+tasks.register("generateBuildInfo") {
+    val outputDir = layout.buildDirectory.dir("resources/main")
+    outputs.dir(outputDir)
+    outputs.upToDateWhen { false }
+    doLast {
+        val file = outputDir.get().file("build-info.json").asFile
+        file.parentFile.mkdirs()
+        val timestamp = System.currentTimeMillis().toString()
+        val gitHash = try {
+            providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+                .standardOutput.asText.get().trim()
+        } catch (_: Exception) { "unknown" }
+        file.writeText("""{"buildTime":"$timestamp","gitHash":"$gitHash","version":"$version"}""")
+    }
+}
+
+tasks.named("processResources") {
+    dependsOn("generateBuildInfo")
+}
+
+tasks.named("classes") {
+    dependsOn("generateBuildInfo")
+}
