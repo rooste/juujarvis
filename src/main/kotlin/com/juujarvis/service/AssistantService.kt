@@ -133,11 +133,21 @@ If an image is attached but the message doesn't mention warranties, don't assume
             )
         }
 
-        // Add the current message (with multimodal support for images)
+        // Add the current message with any attached images as native vision blocks
+        val contentBlocks = buildContentBlocks(userText)
+        message.images.forEach { img ->
+            val imageBlock = loadImageBlock(img.filePath)
+            if (imageBlock != null) {
+                contentBlocks.add(imageBlock)
+                contentBlocks.add(ContentBlockParam.ofText(
+                    TextBlockParam.builder().text("[Attached image: ${img.filename}, source: ${img.filePath}]").build()
+                ))
+            }
+        }
         conversationMessages.add(
             MessageParam.builder()
                 .role(MessageParam.Role.USER)
-                .content(MessageParam.Content.ofBlockParams(buildContentBlocks(userText)))
+                .content(MessageParam.Content.ofBlockParams(contentBlocks))
                 .build()
         )
 
@@ -541,7 +551,7 @@ $conversationContext$summaryContext"""
      * Parse text that may contain [IMAGE_BASE64:mediaType:data] markers
      * and build a list of content blocks (text + native image blocks).
      */
-    private fun buildContentBlocks(text: String): List<ContentBlockParam> {
+    private fun buildContentBlocks(text: String): MutableList<ContentBlockParam> {
         val blocks = mutableListOf<ContentBlockParam>()
         var lastEnd = 0
 
@@ -593,6 +603,50 @@ $conversationContext$summaryContext"""
         }
 
         return blocks
+    }
+
+    private fun loadImageBlock(filePath: String): ContentBlockParam? {
+        return try {
+            val file = java.io.File(filePath)
+            if (!file.exists()) return null
+
+            val img = javax.imageio.ImageIO.read(file) ?: return null
+            val maxDim = 1600
+            val scale = if (maxOf(img.width, img.height) > maxDim) {
+                maxDim.toDouble() / maxOf(img.width, img.height)
+            } else 1.0
+
+            val resized = if (scale < 1.0) {
+                val w = (img.width * scale).toInt()
+                val h = (img.height * scale).toInt()
+                val buf = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+                val g = buf.createGraphics()
+                g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+                g.drawImage(img, 0, 0, w, h, null)
+                g.dispose()
+                buf
+            } else img
+
+            val out = java.io.ByteArrayOutputStream()
+            javax.imageio.ImageIO.write(resized, "jpg", out)
+            val base64 = java.util.Base64.getEncoder().encodeToString(out.toByteArray())
+
+            log.info("Loaded image for vision: {} ({}x{}, {}KB)", filePath, img.width, img.height, base64.length / 1024)
+
+            ContentBlockParam.ofImage(
+                ImageBlockParam.builder()
+                    .source(ImageBlockParam.Source.ofBase64(
+                        Base64ImageSource.builder()
+                            .mediaType(Base64ImageSource.MediaType.IMAGE_JPEG)
+                            .data(base64)
+                            .build()
+                    ))
+                    .build()
+            )
+        } catch (e: Exception) {
+            log.error("Failed to load image {}: {}", filePath, e.message)
+            null
+        }
     }
 
     /**
