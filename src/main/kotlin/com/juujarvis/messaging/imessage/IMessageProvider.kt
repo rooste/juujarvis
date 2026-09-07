@@ -34,8 +34,8 @@ class IMessageProvider : MessagingProvider {
         val safeMessage = escapeForAppleScript(message)
         val script = """
             tell application "Messages"
-                set targetService to 1st service whose service type = iMessage
-                set targetBuddy to buddy "$safeTo" of targetService
+                set targetAccount to 1st account whose service type = iMessage
+                set targetBuddy to buddy "$safeTo" of targetAccount
                 send "$safeMessage" to targetBuddy
             end tell
         """.trimIndent()
