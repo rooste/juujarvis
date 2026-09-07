@@ -69,6 +69,20 @@ data class JuujarvisTask(
     val completedAt: Instant? = null
 )
 
+data class WarrantyRecord(
+    val id: Long = 0,
+    val productName: String,
+    val purchaseDate: String? = null,
+    val warrantyExpiry: String? = null,
+    val store: String? = null,
+    val price: String? = null,
+    val brand: String? = null,
+    val category: String? = null,
+    val notes: String? = null,
+    val imagePath: String? = null,
+    val createdAt: Instant = Instant.now()
+)
+
 @Component
 class ConversationStore(
     @Value("\${juujarvis.db-path:juujarvis.db}")
@@ -168,6 +182,24 @@ class ConversationStore(
                     )
                 """.trimIndent())
                 s.execute("CREATE INDEX IF NOT EXISTS idx_email_summary_received ON email_summary(received_at)")
+
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS warranty (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_name TEXT NOT NULL,
+                        purchase_date TEXT,
+                        warranty_expiry TEXT,
+                        store TEXT,
+                        price TEXT,
+                        brand TEXT,
+                        category TEXT,
+                        notes TEXT,
+                        image_path TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                """.trimIndent())
+                s.execute("CREATE INDEX IF NOT EXISTS idx_warranty_product ON warranty(product_name)")
+                s.execute("CREATE INDEX IF NOT EXISTS idx_warranty_expiry ON warranty(warranty_expiry)")
 
                 // Migrate: add columns to existing databases
                 try { s.execute("ALTER TABLE family_user ADD COLUMN timezone TEXT") } catch (_: Exception) {}
@@ -660,6 +692,92 @@ class ConversationStore(
                 results
             }
         }
+    }
+
+    // ── Warranty ──
+
+    fun saveWarranty(record: WarrantyRecord): Long {
+        return connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT INTO warranty (product_name, purchase_date, warranty_expiry, store, price, brand, category, notes, image_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                java.sql.Statement.RETURN_GENERATED_KEYS
+            ).use { stmt ->
+                stmt.setString(1, record.productName)
+                stmt.setString(2, record.purchaseDate)
+                stmt.setString(3, record.warrantyExpiry)
+                stmt.setString(4, record.store)
+                stmt.setString(5, record.price)
+                stmt.setString(6, record.brand)
+                stmt.setString(7, record.category)
+                stmt.setString(8, record.notes)
+                stmt.setString(9, record.imagePath)
+                stmt.setString(10, record.createdAt.toString())
+                stmt.executeUpdate()
+                val rs = stmt.generatedKeys
+                if (rs.next()) rs.getLong(1) else 0L
+            }
+        }
+    }
+
+    fun searchWarranties(query: String): List<WarrantyRecord> {
+        val pattern = "%${query}%"
+        return connection().use { conn ->
+            conn.prepareStatement(
+                "SELECT * FROM warranty WHERE product_name LIKE ? OR brand LIKE ? OR store LIKE ? OR category LIKE ? OR notes LIKE ? ORDER BY created_at DESC"
+            ).use { stmt ->
+                repeat(5) { stmt.setString(it + 1, pattern) }
+                readWarrantyList(stmt.executeQuery())
+            }
+        }
+    }
+
+    fun loadAllWarranties(): List<WarrantyRecord> {
+        return connection().use { conn ->
+            conn.createStatement().use { s ->
+                readWarrantyList(s.executeQuery("SELECT * FROM warranty ORDER BY created_at DESC"))
+            }
+        }
+    }
+
+    fun loadWarrantyById(id: Long): WarrantyRecord? {
+        return connection().use { conn ->
+            conn.prepareStatement("SELECT * FROM warranty WHERE id = ?").use { stmt ->
+                stmt.setLong(1, id)
+                val rs = stmt.executeQuery()
+                if (rs.next()) readWarranty(rs) else null
+            }
+        }
+    }
+
+    fun deleteWarranty(id: Long): Boolean {
+        return connection().use { conn ->
+            conn.prepareStatement("DELETE FROM warranty WHERE id = ?").use { stmt ->
+                stmt.setLong(1, id)
+                stmt.executeUpdate() > 0
+            }
+        }
+    }
+
+    private fun readWarrantyList(rs: java.sql.ResultSet): List<WarrantyRecord> {
+        val list = mutableListOf<WarrantyRecord>()
+        while (rs.next()) list += readWarranty(rs)
+        return list
+    }
+
+    private fun readWarranty(rs: java.sql.ResultSet): WarrantyRecord {
+        return WarrantyRecord(
+            id = rs.getLong("id"),
+            productName = rs.getString("product_name"),
+            purchaseDate = rs.getString("purchase_date"),
+            warrantyExpiry = rs.getString("warranty_expiry"),
+            store = rs.getString("store"),
+            price = rs.getString("price"),
+            brand = rs.getString("brand"),
+            category = rs.getString("category"),
+            notes = rs.getString("notes"),
+            imagePath = rs.getString("image_path"),
+            createdAt = Instant.parse(rs.getString("created_at"))
+        )
     }
 
     private fun connection() = DriverManager.getConnection(jdbcUrl).also { conn ->

@@ -8,7 +8,13 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
+import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.time.Instant
+import java.util.Base64
+import javax.imageio.ImageIO
 
 /**
  * Generic inbound message endpoint for external bridges (iMessage, Signal, email, etc.).
@@ -47,7 +53,7 @@ class InboundMessageController(
             )
         }
 
-        // Combine message text with any audio transcriptions
+        // Combine message text with audio transcriptions and image attachments
         val fullText = buildString {
             append(request.text)
             request.attachments
@@ -55,6 +61,16 @@ class InboundMessageController(
                 ?.forEach { attachment ->
                     if (isNotBlank()) append("\n\n")
                     append("[Audio message transcription]: ${attachment.transcription}")
+                }
+            request.attachments
+                ?.filter { it.type == AttachmentType.IMAGE && !it.url.isNullOrBlank() }
+                ?.forEach { attachment ->
+                    val encoded = encodeImageAttachment(attachment)
+                    if (encoded != null) {
+                        if (isNotBlank()) append("\n\n")
+                        append("[IMAGE_BASE64:image/jpeg:${encoded.base64}]")
+                        append("\n[Attached image: ${encoded.filename}, source: ${encoded.sourcePath}]")
+                    }
                 }
         }
 
@@ -68,6 +84,48 @@ class InboundMessageController(
 
         messageRouter.handleIncoming(incoming)
         return ResponseEntity.ok(mapOf("status" to "processing"))
+    }
+
+    private data class EncodedImage(val base64: String, val filename: String, val sourcePath: String)
+
+    private fun encodeImageAttachment(attachment: InboundAttachment): EncodedImage? {
+        val filePath = attachment.url ?: return null
+        val file = File(filePath)
+        if (!file.exists() || !file.canRead()) {
+            log.warn("Image attachment not accessible: {}", filePath)
+            return null
+        }
+        return try {
+            val img = ImageIO.read(file) ?: return null
+
+            val maxDim = 1600
+            val scale = if (maxOf(img.width, img.height) > maxDim) {
+                maxDim.toDouble() / maxOf(img.width, img.height)
+            } else 1.0
+
+            val resized = if (scale < 1.0) {
+                val w = (img.width * scale).toInt()
+                val h = (img.height * scale).toInt()
+                val buf = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
+                val g = buf.createGraphics()
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+                g.drawImage(img, 0, 0, w, h, null)
+                g.dispose()
+                buf
+            } else img
+
+            val out = ByteArrayOutputStream()
+            ImageIO.write(resized, "jpg", out)
+            val base64 = Base64.getEncoder().encodeToString(out.toByteArray())
+
+            log.info("Processed image attachment: {} ({}x{} → {}KB base64)",
+                file.name, img.width, img.height, base64.length / 1024)
+
+            EncodedImage(base64, attachment.filename ?: file.name, file.absolutePath)
+        } catch (e: Exception) {
+            log.error("Failed to process image attachment: {}", filePath, e)
+            null
+        }
     }
 }
 

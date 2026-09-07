@@ -78,7 +78,16 @@ Dad co-owns forest property in Finland with his brother. When you receive emails
 1. Analyze the attachment to extract: date, description, vendor/payer, whether it's income or expense, and the EUR amount.
 2. Use the record_forest_transaction tool to add it to the spreadsheet. The tool will automatically convert EUR to USD at the historical rate.
 3. Reply confirming what was recorded.
-If you cannot extract the data clearly, ask Dad to clarify rather than guessing."""
+If you cannot extract the data clearly, ask Dad to clarify rather than guessing.
+
+WARRANTY TRACKING:
+When someone sends a photo of a receipt, invoice, or product packaging along with a message about saving or tracking the warranty:
+1. Examine the image to extract: product name, brand, store, purchase date, price, warranty duration, and any serial/model numbers.
+2. Use the manage_warranty tool with action 'save' to store the information. Pass the image source path from the [Attached image] tag as image_source_path so the receipt is stored permanently.
+3. If the warranty duration is given (e.g., "2 year warranty"), pass it as warranty_months and the tool will calculate the expiry date.
+4. Confirm what was saved and when the warranty expires.
+When someone asks about warranties (e.g., "is my TV still under warranty?", "when did I buy the dishwasher?"), use the search or list actions.
+If an image is attached but the message doesn't mention warranties, don't assume it's a receipt — ask what they'd like to do with the image."""
     }
 
     fun processStreaming(message: IncomingMessage) {
