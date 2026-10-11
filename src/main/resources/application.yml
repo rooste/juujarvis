@@ -38,6 +38,11 @@ juujarvis:
   ideas:
     dir: ${IDEAS_DIR:${user.home}/ideas}
   db-path: juujarvis.db
+  # Client for Bridgarvis (AWS SMS gateway). Enable in application-local.yml together with
+  # the spring.ssl.bundle.pem.bridgarvis client certificate.
+  bridgarvis:
+    enabled: false
+    url: https://localhost:8443
 
 logging:
   level:

@@ -4,3 +4,15 @@
 juujarvis:
   anthropic:
     api-key: sk-ant-your-key-here
+
+# Bridgarvis client (mTLS). Also set juujarvis.bridgarvis.enabled: true (and url).
+#spring:
+#  ssl:
+#    bundle:
+#      pem:
+#        bridgarvis:
+#          keystore:
+#            certificate: file:secrets/bridgarvis/juujarvis.pem
+#            private-key: file:secrets/bridgarvis/juujarvis.key
+#          truststore:   # only for a self-signed dev server cert
+#            certificate: file:secrets/bridgarvis/server.pem

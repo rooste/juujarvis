@@ -51,3 +51,6 @@ temp-images/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local Claude Code settings
+.claude/settings.local.json
