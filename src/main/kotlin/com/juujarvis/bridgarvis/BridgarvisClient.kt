@@ -42,14 +42,15 @@ data class BridgarvisStatus(
  * Bridgarvis announces messages as {"type":"message.available","id":"..","channel":".."}; the message itself is
  * fetched over REST. On every (re)connect all pending messages are drained as well.
  *
- * Test stage: fetched messages are only recorded in [status], not routed to the assistant and
- * not acked, so they stay pending in Bridgarvis until the SMS channel is wired in.
+ * Fetched messages go to [BridgarvisInbox]; once handled they are acked, which removes them from
+ * Bridgarvis's pending list. Unhandled ones (e.g. SMS, not routed yet) stay pending.
  */
 @Component
 @ConditionalOnProperty("juujarvis.bridgarvis.enabled", havingValue = "true")
 class BridgarvisClient(
     sslBundles: SslBundles,
     private val mapper: ObjectMapper,
+    private val inbox: BridgarvisInbox,
     @Value("\${juujarvis.bridgarvis.url}") private val baseUrl: String
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -152,7 +153,7 @@ class BridgarvisClient(
             val response = http.send(HttpRequest.newBuilder(uri("/api/messages")).GET().build(), HttpResponse.BodyHandlers.ofString())
             val pending = mapper.readTree(response.body())
             log.info("Bridgarvis has {} pending message(s)", pending.size())
-            pending.forEach { record(it) }
+            pending.forEach { process(it) }
         } catch (e: Exception) {
             lastError = "drain failed: ${e.message}"
             log.warn("Bridgarvis drain failed: {}", e.message)
@@ -162,7 +163,7 @@ class BridgarvisClient(
     private fun fetch(id: String) {
         try {
             val response = http.send(HttpRequest.newBuilder(uri("/api/messages/$id")).GET().build(), HttpResponse.BodyHandlers.ofString())
-            if (response.statusCode() == 200) record(mapper.readTree(response.body()))
+            if (response.statusCode() == 200) process(mapper.readTree(response.body()))
             else log.warn("Bridgarvis message {} fetch returned HTTP {}", id, response.statusCode())
         } catch (e: Exception) {
             lastError = "fetch failed: ${e.message}"
@@ -170,10 +171,35 @@ class BridgarvisClient(
         }
     }
 
+    private fun process(message: JsonNode) {
+        record(message)
+        val id = message["id"]?.asText() ?: return
+        val handled = try {
+            inbox.handle(message)
+        } catch (e: Exception) {
+            log.error("Handling Bridgarvis message {} failed", id, e)
+            false
+        }
+        if (handled) ack(id)
+    }
+
+    private fun ack(id: String) {
+        try {
+            val response = http.send(
+                HttpRequest.newBuilder(uri("/api/messages/$id/ack")).POST(HttpRequest.BodyPublishers.noBody()).build(),
+                HttpResponse.BodyHandlers.discarding()
+            )
+            log.info("Bridgarvis message {} acked (HTTP {})", id, response.statusCode())
+        } catch (e: Exception) {
+            lastError = "ack failed: ${e.message}"
+            log.warn("Bridgarvis ack of {} failed: {}", id, e.message)
+        }
+    }
+
     private fun record(message: JsonNode) {
         lastFetchedId = message["id"]?.asText()
         lastFetchedFrom = message["from"]?.asText()
-        log.info("Bridgarvis message {} fetched (not yet routed)", lastFetchedId)
+        log.info("Bridgarvis message {} fetched", lastFetchedId)
     }
 
     private fun uri(path: String) = URI.create(baseUrl.trimEnd('/') + path)
