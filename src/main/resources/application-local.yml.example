@@ -5,7 +5,8 @@ juujarvis:
   anthropic:
     api-key: sk-ant-your-key-here
 
-# Bridgarvis client (mTLS). Also set juujarvis.bridgarvis.enabled: true (and url).
+# Bridgarvis client (mTLS). Also set juujarvis.bridgarvis.enabled: true, url and email-address
+# (Juujarvis's own address, sent from by Bridgarvis).
 #spring:
 #  ssl:
 #    bundle:

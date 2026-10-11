@@ -2,17 +2,22 @@ package com.juujarvis.tool
 
 import com.anthropic.core.JsonValue
 import com.anthropic.models.messages.Tool
+import com.juujarvis.bridgarvis.BridgarvisClient
 import com.juujarvis.service.ConversationStore
 import com.juujarvis.service.EmailAttachmentService
 import com.juujarvis.service.OutlookEmailService
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 
 @Component
 class EmailTool(
     private val emailService: OutlookEmailService,
     private val conversationStore: ConversationStore,
-    private val emailAttachmentService: EmailAttachmentService
+    private val emailAttachmentService: EmailAttachmentService,
+    private val bridgarvisClient: ObjectProvider<BridgarvisClient>,
+    @Value("\${juujarvis.bridgarvis.email-address:}") private val ownAddress: String
 ) : JuujarvisTool {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -23,8 +28,10 @@ class EmailTool(
         return Tool.builder()
             .name(name)
             .description(
-                "Read and send emails via the family Outlook account (juujarvis@outlook.com). " +
-                "Use this to check for new emails, read specific messages, or send emails on behalf of the family."
+                "Send emails, and read the Outlook inbox (juujarvis@outlook.com, the old backup account). " +
+                "New emails are sent from your own address ${ownAddress.ifBlank { "(not configured)" }} by default (account=own); " +
+                "use account=outlook only to reply_all to an Outlook email or if asked to send from Outlook. " +
+                "Mail to your own address reaches you automatically, so there is no inbox to read for it."
             )
             .inputSchema(
                 Tool.InputSchema.builder()
@@ -44,9 +51,14 @@ class EmailTool(
                                     "type" to "string",
                                     "description" to "Email message ID (required for read_message)"
                                 ),
+                                "account" to mapOf(
+                                    "type" to "string",
+                                    "enum" to listOf("own", "outlook"),
+                                    "description" to "Account to send from (send only). Default own."
+                                ),
                                 "to" to mapOf(
                                     "type" to "string",
-                                    "description" to "Recipient email address (required for send)"
+                                    "description" to "Recipient email address (required for send). With account=own several addresses may be given, comma-separated (max 10)."
                                 ),
                                 "subject" to mapOf(
                                     "type" to "string",
@@ -66,6 +78,9 @@ class EmailTool(
     }
 
     override fun execute(arguments: Map<String, Any?>): String {
+        if (arguments["action"] == "send" && (arguments["account"] as? String ?: "own") == "own") {
+            return sendFromOwnAddress(arguments)
+        }
         if (!emailService.isAvailable()) {
             return "Email is not configured. Visit http://localhost:8080/auth/microsoft/login to connect the Outlook account."
         }
@@ -167,5 +182,19 @@ class EmailTool(
 
             else -> "Unknown action: $action. Use read_inbox, read_message, send, or reply_all."
         }
+    }
+
+    private fun sendFromOwnAddress(arguments: Map<String, Any?>): String {
+        val client = bridgarvisClient.ifAvailable
+            ?: return "Sending from your own address is not available (Bridgarvis is disabled). Use account=outlook instead."
+        val to = (arguments["to"] as? String)?.split(',', ';')?.map { it.trim() }?.filter { it.isNotEmpty() }
+        if (to.isNullOrEmpty()) return "Error: 'to' is required"
+        if (to.size > 10) return "Error: at most 10 recipients"
+        val subject = arguments["subject"] as? String ?: return "Error: 'subject' is required"
+        val body = arguments["body"] as? String ?: return "Error: 'body' is required"
+        log.info("Sending email via Bridgarvis to {} recipient(s)", to.size)
+        val result = client.sendEmail(to, subject, body)
+        return if (result.ok) "Email sent from $ownAddress to ${to.joinToString(", ")} with subject '$subject'"
+        else "Failed to send email to ${to.joinToString(", ")}: ${result.detail}"
     }
 }

@@ -23,6 +23,9 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+/** Outcome of an email send: [detail] is the Bridgarvis message id on success, the reason otherwise. */
+data class EmailSendResult(val ok: Boolean, val detail: String)
+
 data class BridgarvisStatus(
     val url: String,
     val connected: Boolean,
@@ -101,6 +104,37 @@ class BridgarvisClient(
         lastFetchedFrom = lastFetchedFrom,
         lastError = lastError
     )
+
+    /**
+     * Sends an email through Bridgarvis (SES, from the assistant's address). [EmailSendResult.ok] is true
+     * when SES accepted it; otherwise [EmailSendResult.detail] says why (also logged).
+     */
+    fun sendEmail(to: List<String>, subject: String, text: String, inReplyTo: String? = null, references: String? = null): EmailSendResult {
+        val body = mapper.writeValueAsString(mapOf(
+            "to" to to, "subject" to subject, "text" to text, "inReplyTo" to inReplyTo, "references" to references
+        ))
+        return try {
+            val response = http.send(
+                HttpRequest.newBuilder(uri("/api/email/send"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(20))
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString()
+            )
+            if (response.statusCode() == 200) {
+                val id = mapper.readTree(response.body())["id"]?.asText() ?: ""
+                log.info("Email sent via Bridgarvis: {}", id)
+                EmailSendResult(true, id)
+            } else {
+                log.warn("Bridgarvis email send failed: HTTP {} {}", response.statusCode(), response.body().take(300))
+                EmailSendResult(false, "HTTP ${response.statusCode()} ${response.body().take(200)}".trim())
+            }
+        } catch (e: Exception) {
+            log.warn("Bridgarvis email send failed: {}", e.message)
+            EmailSendResult(false, e.message ?: e.javaClass.simpleName)
+        }
+    }
 
     /** Sends an SMS through Bridgarvis. Returns the response body (messageId + status). */
     fun send(to: String, text: String): JsonNode {

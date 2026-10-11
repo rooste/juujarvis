@@ -43,6 +43,8 @@ juujarvis:
   bridgarvis:
     enabled: false
     url: https://localhost:8443
+    # Juujarvis's own address (Bridgarvis sends from it); told to the model. Set in application-local.yml.
+    email-address:
     # Gets iMessage notifications about mail to notify-only mailboxes (e.g. info@)
     notify-user: dad
     # Base URL of the mail UI used in notification links (defaults to url)

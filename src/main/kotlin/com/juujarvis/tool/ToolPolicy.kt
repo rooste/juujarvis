@@ -1,12 +1,22 @@
 package com.juujarvis.tool
 
+/** What a turn may do with tools, based on where its content came from. */
+enum class ToolProfile {
+    /** Family member on a trusted channel (iMessage, web UI): every tool. */
+    FULL,
+    /** Email to the assistant: reads only; changes need confirmation over iMessage. */
+    READ_ONLY,
+    /** Authenticated school mail: reads plus the school workflow (calendar, tasks, iMessages to family). */
+    SCHOOL
+}
+
 /**
- * Which tools and actions may run in an untrusted turn (one triggered by email content). Only reads
- * are allowed: anything that changes state, sends something, or reaches outside (like web search,
- * which could leak data through its query) needs the user's confirmation over iMessage instead.
+ * Which tools and actions a turn may use. Content from email is untrusted, so those turns only get
+ * what their purpose needs. Web search stays off for them (a query could leak data), and nothing can
+ * delete, change users/profiles, record finances or send email.
  */
 object ToolPolicy {
-    /** Tool name → allowed actions, or null when every use of the tool is read-only. */
+    /** Tool name → allowed actions, or null when every use of the tool is allowed. */
     private val readOnly: Map<String, Set<String>?> = mapOf(
         "manage_calendar" to setOf("list", "search"),
         "email" to setOf("read_inbox", "read_message"),
@@ -19,15 +29,32 @@ object ToolPolicy {
         "zoom_image" to null,
     )
 
-    fun availableInUntrustedTurn(toolName: String) = toolName in readOnly
+    private val school: Map<String, Set<String>?> = readOnly + mapOf(
+        "manage_calendar" to setOf("list", "search", "create", "update"),
+        "manage_task" to setOf("list", "create", "update", "complete"),
+        "send_message" to null,      // only reaches family members and family group chats
+    )
 
-    fun allowedInUntrustedTurn(toolName: String, arguments: Map<String, Any?>): Boolean {
-        if (toolName !in readOnly) return false
-        val actions = readOnly[toolName] ?: return true
+    private fun rules(profile: ToolProfile): Map<String, Set<String>?>? = when (profile) {
+        ToolProfile.FULL -> null
+        ToolProfile.READ_ONLY -> readOnly
+        ToolProfile.SCHOOL -> school
+    }
+
+    fun available(profile: ToolProfile, toolName: String): Boolean = rules(profile)?.containsKey(toolName) ?: true
+
+    fun allowed(profile: ToolProfile, toolName: String, arguments: Map<String, Any?>): Boolean {
+        val rules = rules(profile) ?: return true
+        if (toolName !in rules) return false
+        val actions = rules[toolName] ?: return true
         return (arguments["action"] as? String) in actions
     }
 
+    // Kept for the read-only email turns (and their tests)
+    fun availableInUntrustedTurn(toolName: String) = available(ToolProfile.READ_ONLY, toolName)
+    fun allowedInUntrustedTurn(toolName: String, arguments: Map<String, Any?>) = allowed(ToolProfile.READ_ONLY, toolName, arguments)
+
     const val DENIED =
-        "Not allowed: this turn was triggered by an email, so only read-only actions are available. " +
-        "Describe what you would do and ask the sender to confirm by iMessage; do it after they confirm there."
+        "Not allowed: this turn was triggered by an email, so this action is not available. " +
+        "Describe what you would do and ask Dad (or the sender) to confirm by iMessage; do it after they confirm there."
 }

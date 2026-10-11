@@ -22,6 +22,7 @@ class MicrosoftAuthController(
     @GetMapping("/callback")
     fun callback(
         @RequestParam(required = false) code: String?,
+        @RequestParam(required = false) state: String?,
         @RequestParam(required = false) error: String?,
         @RequestParam(name = "error_description", required = false) errorDescription: String?
     ): ResponseEntity<String> {
@@ -30,6 +31,9 @@ class MicrosoftAuthController(
         }
         if (code == null) {
             return ResponseEntity.badRequest().body("No authorization code received from Microsoft.")
+        }
+        if (!authService.isExpectedState(state)) {
+            return ResponseEntity.badRequest().body("This sign-in was not started here (or it expired). Open /auth/microsoft/login again.")
         }
         val success = authService.exchangeCodeForTokens(code)
         return if (success) {
@@ -43,6 +47,7 @@ class MicrosoftAuthController(
     fun status(): ResponseEntity<Map<String, Any>> {
         return ResponseEntity.ok(mapOf(
             "configured" to authService.isConfigured(),
+            "publicClient" to authService.isPublicClient,
             "authenticated" to authService.hasTokens()
         ))
     }

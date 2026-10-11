@@ -9,7 +9,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.annotation.Configuration
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import java.time.Duration
 import java.time.Instant
+import java.time.format.DateTimeFormatter
 import java.time.LocalTime
 import java.time.ZoneId
 
@@ -43,8 +45,10 @@ class EmailPoller(
     private val zone = ZoneId.of("America/Chicago")
     private var lastPollTime = 0L
 
-    @jakarta.annotation.PostConstruct
+    // After startup (not @PostConstruct), so problems found on the first poll reach event listeners
+    @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent::class)
     fun init() {
+        lastPollTime = System.currentTimeMillis()   // the scheduler waits a full interval after this poll
         if (outlookEmailService.isAvailable()) {
             log.info("Email poller starting — checking inbox on startup")
             pollInbox()
@@ -65,6 +69,9 @@ class EmailPoller(
         pollInbox()
     }
 
+    // One poll at a time: the startup poll and the scheduler could otherwise overlap and both pick up
+    // the same new email before its summary is saved.
+    @Synchronized
     private fun pollInbox() {
         log.debug("Polling Outlook inbox")
         val emails = outlookEmailService.readRecentEmails(count = 10)
@@ -72,6 +79,9 @@ class EmailPoller(
         var newCount = 0
         for (email in emails) {
             if (conversationStore.hasEmailSummary(email.id)) continue
+
+            val received = runCatching { Instant.parse(email.receivedAt) }.getOrNull()
+            val ageDays = received?.let { Duration.between(it, Instant.now()).toDays() } ?: 0
 
             // System/service provider emails: don't reply, notify Dad instead
             if (isSystemEmail(email.from)) {
@@ -82,6 +92,11 @@ class EmailPoller(
                         subject = email.subject, summary = "(system notification — forwarded to Dad)", receivedAt = email.receivedAt
                     )
                 )
+                if (ageDays >= 1) {
+                    // Stale alert (e.g. polling was paused): recorded above, not worth notifying about now
+                    log.info("Old system email from {} ({} days) recorded without alert", email.from, ageDays)
+                    continue
+                }
                 val alert = "Service/system email received from ${email.from}\nSubject: ${email.subject}\nPreview: ${email.preview.take(200)}"
                 webSocketService.sendStreamChunk("dad", alert)
                 webSocketService.sendStreamEnd("dad")
@@ -114,7 +129,11 @@ class EmailPoller(
 
             val otherRecipients = email.toRecipients.filter { !it.equals("juujarvis@outlook.com", ignoreCase = true) }
             val recipientsLine = if (otherRecipients.isNotEmpty()) "\nOther recipients: ${otherRecipients.joinToString(", ")}" else ""
-            val messageText = "Email from: ${email.fromName ?: email.from} <${email.from}>\nSubject: ${email.subject}$recipientsLine\n\n$bodyText$attachmentText"
+            val receivedLine = received?.let {
+                val date = DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a").withZone(zone).format(it)
+                "\nReceived: $date" + when (ageDays) { 0L -> " (today)"; 1L -> " (1 day ago)"; else -> " ($ageDays days ago)" }
+            } ?: ""
+            val messageText = "Email from: ${email.fromName ?: email.from} <${email.from}>\nSubject: ${email.subject}$receivedLine$recipientsLine\n\n$bodyText$attachmentText"
 
             val incoming = IncomingMessage(
                 userId = email.from,
