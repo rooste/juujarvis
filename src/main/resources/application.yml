@@ -35,6 +35,8 @@ juujarvis:
     credentials-path: secrets/google-credentials.json
     tokens-path: secrets/google-tokens
     calendar-id: primary
+  ideas:
+    dir: ${IDEAS_DIR:${user.home}/ideas}
   db-path: juujarvis.db
 
 logging:
