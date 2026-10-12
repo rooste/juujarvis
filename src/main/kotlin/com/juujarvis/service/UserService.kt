@@ -22,14 +22,14 @@ class UserService(private val conversationStore: ConversationStore) {
                     id = "dad", name = "Dad", type = UserType.DAD,
                     contacts = listOf(
                         ContactInterface(ChannelType.WEB_UI, "web-session"),
-                        ContactInterface(ChannelType.IMESSAGE, "roose@iki.fi")
+                        ContactInterface(ChannelType.IMESSAGE, "dad@example.com")
                     ),
                     timezone = ZoneId.of("America/Chicago")
                 ),
                 User(
                     id = "mom", name = "Mom", type = UserType.MOM,
                     contacts = listOf(
-                        ContactInterface(ChannelType.IMESSAGE, "saija.taavettila@iki.fi")
+                        ContactInterface(ChannelType.IMESSAGE, "mom@example.com")
                     ),
                     timezone = ZoneId.of("America/Chicago")
                 )

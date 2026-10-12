@@ -35,13 +35,13 @@ paths:
                 summary: Simple text message
                 value:
                   channel: IMESSAGE
-                  sender: roose@iki.fi
+                  sender: dad@example.com
                   text: What's on the calendar today?
               groupMessage:
                 summary: Message from a group chat
                 value:
                   channel: IMESSAGE
-                  sender: roose@iki.fi
+                  sender: dad@example.com
                   text: Can you remind everyone about dinner?
                   timestamp: "2026-04-10T03:00:00Z"
                   conversation:
@@ -50,20 +50,20 @@ paths:
                     isGroup: true
                     displayName: Family Chat
                     participants:
-                      - roose@iki.fi
-                      - saija.taavettila@iki.fi
+                      - dad@example.com
+                      - mom@example.com
               audioMessage:
                 summary: Audio message with transcription
                 value:
                   channel: IMESSAGE
-                  sender: saija.taavettila@iki.fi
+                  sender: mom@example.com
                   text: ""
                   conversation:
                     chatId: chat679686843192233386
                     chatGuid: "iMessage;+;chat679686843192233386"
                     isGroup: false
                     participants:
-                      - saija.taavettila@iki.fi
+                      - mom@example.com
                   attachments:
                     - type: AUDIO
                       mimeType: audio/x-caf
@@ -79,7 +79,7 @@ paths:
                 value:
                   channel: EMAIL
                   sender: grandma@example.com
-                  text: "When is Samuli's birthday party?"
+                  text: "When is Alex's birthday party?"
       responses:
         '200':
           description: Message accepted for processing
@@ -105,12 +105,12 @@ components:
           type: string
           description: |
             Sender identifier — format depends on channel:
-            - IMESSAGE: email or phone (e.g. `roose@iki.fi`, `+15551234567`)
+            - IMESSAGE: email or phone (e.g. `dad@example.com`, `+15551234567`)
             - SIGNAL: phone number (e.g. `+15551234567`)
             - EMAIL: email address
             - SMS: phone number
           examples:
-            - roose@iki.fi
+            - dad@example.com
             - "+15551234567"
         text:
           type: string
@@ -158,8 +158,8 @@ components:
           default: []
           description: List of participant identifiers in the conversation.
           example:
-            - roose@iki.fi
-            - saija.taavettila@iki.fi
+            - dad@example.com
+            - mom@example.com
 
     InboundAttachment:
       type: object

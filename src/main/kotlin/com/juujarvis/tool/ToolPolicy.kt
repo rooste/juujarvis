@@ -32,6 +32,7 @@ object ToolPolicy {
         "search_confluence" to null,
         "read_messages" to null,
         "zoom_image" to null,
+        "announce_on_echo" to null,  // judgement rules in its description; rate limited
     )
 
     private val school: Map<String, Set<String>?> = readOnly + mapOf(
@@ -52,6 +53,7 @@ object ToolPolicy {
         "send_message" to null,      // only reaches family members and family group chats
         "web_search" to null,
         "alexa_device" to null,
+        "announce_on_echo" to null,
     )
 
     private fun rules(profile: ToolProfile): Map<String, Set<String>?>? = when (profile) {

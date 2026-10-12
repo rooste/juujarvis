@@ -61,7 +61,7 @@ External bridges (iMessage, Signal, email) can POST messages to `POST /api/inbou
 ```bash
 curl -X POST http://localhost:8080/api/inbound \
   -H "Content-Type: application/json" \
-  -d '{"channel":"IMESSAGE","sender":"roose@iki.fi","text":"Hello Juujarvis"}'
+  -d '{"channel":"IMESSAGE","sender":"dad@example.com","text":"Hello Juujarvis"}'
 ```
 
 ## Tools available to Claude

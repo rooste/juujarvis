@@ -28,7 +28,7 @@ class IdeasTool(
         return Tool.builder()
             .name(name)
             .description(
-                "Access Heikki's Ideas Lab, where future product and business ideas are explored and reviewed " +
+                "Access Dad's Ideas Lab, where future product and business ideas are explored and reviewed " +
                 "by a team of agents. Use 'add' only when someone explicitly asks to save an idea to the backlog. " +
                 "Use 'backlog' to see raw and ranked ideas, 'list' to see developed ideas, and 'read' to see an " +
                 "idea's one-pager (including score, risks, and next experiment)."

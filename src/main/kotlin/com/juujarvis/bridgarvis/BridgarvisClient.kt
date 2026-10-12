@@ -26,6 +26,8 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Outcome of an email send: [detail] is the Bridgarvis message id on success, the reason otherwise. */
 data class EmailSendResult(val ok: Boolean, val detail: String)
 
+enum class AlexaReplyResult { SPOKEN, QUEUED, FAILED }
+
 data class BridgarvisStatus(
     val url: String,
     val connected: Boolean,
@@ -137,11 +139,11 @@ class BridgarvisClient(
     }
 
     /**
-     * Answers a waiting Alexa question. True when Alexa speaks it; false when the question has stopped
-     * waiting (too late) or the call failed, so the caller should use another channel.
+     * Answers an Alexa question. SPOKEN: Alexa says it now. QUEUED: too late for the request; Bridgarvis
+     * keeps it for the asking Echo. FAILED: unknown/expired or the call failed; use another channel.
      */
-    fun replyAlexa(id: String, speech: String, endSession: Boolean, reprompt: String? = null): Boolean {
-        val body = mapper.writeValueAsString(mapOf("speech" to speech, "endSession" to endSession, "reprompt" to reprompt))
+    fun replyAlexa(id: String, speech: String, endSession: Boolean, reprompt: String? = null, room: String? = null): AlexaReplyResult {
+        val body = mapper.writeValueAsString(mapOf("speech" to speech, "endSession" to endSession, "reprompt" to reprompt, "room" to room))
         return try {
             val response = http.send(
                 HttpRequest.newBuilder(uri("/api/alexa/$id/reply"))
@@ -153,12 +155,43 @@ class BridgarvisClient(
             )
             if (response.statusCode() != 200) {
                 log.warn("Bridgarvis Alexa reply failed: HTTP {}", response.statusCode())
-                return false
+                return AlexaReplyResult.FAILED
             }
-            mapper.readTree(response.body())["delivered"]?.asBoolean() == true
+            val result = mapper.readTree(response.body())
+            when {
+                result["delivered"]?.asBoolean() == true -> AlexaReplyResult.SPOKEN
+                result["queued"]?.asBoolean() == true -> AlexaReplyResult.QUEUED
+                else -> AlexaReplyResult.FAILED
+            }
         } catch (e: Exception) {
             log.warn("Bridgarvis Alexa reply failed: {}", e.message)
-            false
+            AlexaReplyResult.FAILED
+        }
+    }
+
+    /**
+     * Asks Bridgarvis to speak [text] on an Echo. Returns null if it could not be queued, otherwise whether
+     * the Echo's sensor was opened (the routine plays it now) or it waits until the skill is opened there.
+     */
+    fun announceAlexa(deviceId: String, text: String): Boolean? {
+        val body = mapper.writeValueAsString(mapOf("deviceId" to deviceId, "text" to text))
+        return try {
+            val response = http.send(
+                HttpRequest.newBuilder(uri("/api/alexa/announce"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(5))
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString()
+            )
+            if (response.statusCode() != 200) {
+                log.warn("Bridgarvis Alexa announcement failed: HTTP {}", response.statusCode())
+                return null
+            }
+            mapper.readTree(response.body())["announced"]?.asBoolean() == true
+        } catch (e: Exception) {
+            log.warn("Bridgarvis Alexa announcement failed: {}", e.message)
+            null
         }
     }
 

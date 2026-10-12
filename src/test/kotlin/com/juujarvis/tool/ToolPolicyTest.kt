@@ -51,6 +51,9 @@ class ToolPolicyTest {
         assertFalse(ToolPolicy.allowed(ToolProfile.READ_ONLY, "manage_calendar", mapOf("action" to "create")))
         assertFalse(ToolPolicy.allowed(ToolProfile.READ_ONLY, "send_message", emptyMap()))
         assertTrue(ToolPolicy.allowed(ToolProfile.FULL, "web_search", emptyMap()))
+        // announcements are judged by the model (family requests, school emergencies), in every profile
+        assertTrue(school("announce_on_echo"))
+        assertTrue(ToolPolicy.allowed(ToolProfile.READ_ONLY, "announce_on_echo", emptyMap()))
     }
 
     @Test
@@ -72,6 +75,7 @@ class ToolPolicyTest {
         assertFalse(voice("update_person_profile"))
         assertFalse(voice("record_forest_transaction"))
         assertFalse(voice("manage_warranty", "delete"))
+        assertTrue(voice("announce_on_echo"))
         assertTrue(ToolPolicy.denied(ToolProfile.VOICE).startsWith("Not available by voice"))
         assertTrue(ToolPolicy.denied(ToolProfile.READ_ONLY).contains("email"))
     }

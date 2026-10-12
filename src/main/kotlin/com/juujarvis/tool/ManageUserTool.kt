@@ -34,7 +34,7 @@ class ManageUserTool(private val userService: UserService) : JuujarvisTool {
                                 ),
                                 "name" to mapOf(
                                     "type" to "string",
-                                    "description" to "Person's name (e.g., 'Samuli', 'Grandma')"
+                                    "description" to "Person's name (e.g., 'Alex', 'Grandma')"
                                 ),
                                 "type" to mapOf(
                                     "type" to "string",
