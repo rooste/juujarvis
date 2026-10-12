@@ -2,6 +2,7 @@ package com.juujarvis.bridgarvis
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.juujarvis.messaging.MessagingService
+import com.juujarvis.model.AlexaContext
 import com.juujarvis.model.ChannelType
 import com.juujarvis.model.Conversation
 import com.juujarvis.model.EmailReplyContext
@@ -28,6 +29,8 @@ import java.time.format.DateTimeFormatter
  *   the model, because anyone can write to that address.
  * - purpose "assistant" (juujarvis@): only from known family members; handed to the assistant as an
  *   untrusted turn (read-only tools) in the sender's iMessage thread, where replies are delivered.
+ * - channel "alexa": a spoken question from an Echo; answered by voice (VOICE tool profile). Questions
+ *   older than a minute are dropped: Alexa has long stopped waiting and the asker has moved on.
  */
 @Component
 @ConditionalOnProperty("juujarvis.bridgarvis.enabled", havingValue = "true")
@@ -44,6 +47,7 @@ class BridgarvisInbox(
 
     fun handle(message: JsonNode): Boolean {
         val id = message.text("id") ?: return false
+        if (message.text("channel") == "alexa") return toAlexa(id, message)
         if (message.text("channel") != "email") return false   // SMS is not routed yet
         return when (message.text("purpose")) {
             "notify" -> notifyOwner(id, message)
@@ -131,6 +135,38 @@ class BridgarvisInbox(
         return true
     }
 
+    private fun toAlexa(id: String, m: JsonNode): Boolean {
+        val asked = m.text("timestamp")?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        if (asked == null || Duration.between(asked, Instant.now()) > ALEXA_MAX_AGE) {
+            log.info("Alexa question {} is stale, dropped", id)
+            return true
+        }
+        val question = m.text("text")?.trim().orEmpty()
+        val deviceId = m.path("context").text("deviceId")
+        if (question.isEmpty() || deviceId == null) return true
+
+        val device = conversationStore.touchAlexaDevice(deviceId)
+        val usual = device.defaultUserId?.ifBlank { null }?.let { userService.getUser(it) }
+        val fallbackUser = usual ?: userService.getUser(notifyUserId)
+        val fallbackHandle = fallbackUser?.contacts?.firstOrNull { it.channelType == ChannelType.IMESSAGE }?.address
+        messageRouter.handleIncoming(IncomingMessage(
+            userId = "alexa:$deviceId",
+            channel = ChannelType.ALEXA,
+            text = question.take(2000),
+            toolProfile = ToolProfile.VOICE,
+            alexa = AlexaContext(
+                requestId = id,
+                deviceId = deviceId,
+                room = device.room,
+                defaultPerson = usual?.name,
+                personId = m.path("context").text("personId"),
+                fallbackHandle = fallbackHandle
+            )
+        ))
+        log.info("Alexa question {} handed to the assistant (room {})", id, device.room ?: "unknown")
+        return true
+    }
+
     /**
      * School mail (authenticated, allowlisted sender) goes through the school-email rules in the owner's
      * iMessage thread, so the owner gets the summary and can follow up there.
@@ -177,6 +213,10 @@ class BridgarvisInbox(
     }
 
     private fun JsonNode.text(field: String): String? = get(field)?.takeIf { it.isTextual }?.asText()
+
+    companion object {
+        private val ALEXA_MAX_AGE: Duration = Duration.ofSeconds(60)
+    }
 
     /** One line, no control/format characters, bounded: sender-controlled text in a notification. */
     private fun oneLine(s: String): String =

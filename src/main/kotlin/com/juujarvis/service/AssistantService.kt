@@ -5,6 +5,7 @@ import com.anthropic.core.JsonValue
 import com.anthropic.helpers.MessageAccumulator
 import com.anthropic.models.messages.*
 import com.juujarvis.messaging.MessagingService
+import com.juujarvis.model.AlexaContext
 import com.juujarvis.model.ChannelType
 import com.juujarvis.bridgarvis.BridgarvisClient
 import com.juujarvis.tool.ToolPolicy
@@ -30,7 +31,10 @@ class AssistantService(
     @Value("\${juujarvis.anthropic.model:claude-sonnet-4-20250514}")
     private val modelId: String,
     @Value("\${juujarvis.bridgarvis.email-address:}")
-    private val ownEmailAddress: String
+    private val ownEmailAddress: String,
+    /** Model for voice turns, which must answer within Alexa's few seconds; defaults to the main model. */
+    @Value("\${juujarvis.alexa.model:\${juujarvis.anthropic.model:claude-sonnet-4-20250514}}")
+    private val voiceModelId: String
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -50,6 +54,27 @@ facts such as dates, deadlines, events and concerns.
 - Your text response goes to Dad by iMessage: summarize only what needs action. If nothing does, reply
   with exactly [NO_RESPONSE].
 - Check the received date and use judgement for older emails, as described in the email rules."""
+
+        private const val VOICE_PROMPT = """
+
+VOICE REQUEST THROUGH AN ECHO (this turn):
+Someone in the household asked this out loud through an Amazon Echo. Your text response is SPOKEN by Alexa.
+- Answer in one to three short sentences of natural speech. No markdown, lists, emojis, URLs or symbols;
+  say dates and times the way people say them ("Thursday at five thirty").
+- If the full answer is long (several events, a recipe, details), say the gist and offer to send the
+  details by iMessage. If they say yes, use send_message to the person asking.
+- The text came from speech recognition: words, especially names, may be misheard or split (e.g. a
+  Finnish name heard as two English words). Map near-matches to family members' names; if unsure, ask.
+- Who is speaking is NOT verified: anyone near the Echo (a guest, a child, the TV) could be asking. Treat
+  them as a household member. Sending email, changing users or profiles and recording finances are not
+  available by voice; offer to do those when they ask by iMessage.
+- "Me"/"my": use the Echo's usual person if one is set. Otherwise, when the answer depends on who is
+  asking (their calendar, a reminder for them), ask "Who's this for?" first.
+- If you ask a question, end your response with the question mark: the Echo then keeps listening for
+  the answer. Otherwise the conversation ends after your answer.
+- Never answer with [NO_RESPONSE]; always say something, even just "Okay."
+- Requests take a few seconds at most: use as few tools as needed. If the Echo's room is unknown, answer
+  the question first, then ask which room the Echo is in and save it with alexa_device (action set)."""
 
         private const val UNTRUSTED_EMAIL_PROMPT = """
 
@@ -132,14 +157,10 @@ If an image is attached but the message doesn't mention warranties, don't assume
 
     fun processStreaming(message: IncomingMessage) {
         val senderUser = userService.findByHandle(message.userId)
-        val senderName = senderUser?.name ?: message.userId
+        val senderName = message.alexa?.let { voiceSpeaker(it) } ?: senderUser?.name ?: message.userId
         log.info("Processing message from '{}' ({}): {}", senderName, message.userId, message.text)
 
-        val conversationId = when {
-            message.conversation != null -> message.conversation.chatId
-            message.channel == ChannelType.EMAIL -> "email-${message.userId}"
-            else -> "web-ui-${message.userId}"
-        }
+        val conversationId = conversationIdFor(message)
 
         // Save the incoming user message
         conversationStore.saveTurn(conversationId, "user", message.text, senderName, message.channel.name, message.timestamp)
@@ -148,13 +169,14 @@ If an image is attached but the message doesn't mention warranties, don't assume
             ToolProfile.FULL -> ""
             ToolProfile.READ_ONLY -> UNTRUSTED_EMAIL_PROMPT
             ToolProfile.SCHOOL -> SCHOOL_MAILBOX_PROMPT
+            ToolProfile.VOICE -> VOICE_PROMPT + (message.alexa?.let { voiceContext(it) } ?: "")
         }
 
         // Email turns carry their own header line; a "[Name]:" prefix would misattribute the content
-        val userText = if (message.channel == ChannelType.IMESSAGE && !message.untrusted) {
-            "[$senderName]: ${message.text}"
-        } else {
-            message.text
+        val userText = when {
+            message.channel == ChannelType.IMESSAGE && !message.untrusted -> "[$senderName]: ${message.text}"
+            message.alexa != null -> "[Spoken at the ${message.alexa.room ?: "unknown room"} Echo]: ${message.text}"
+            else -> message.text
         }
 
         // Load conversation history and build message list
@@ -204,7 +226,7 @@ If an image is attached but the message doesn't mention warranties, don't assume
             log.debug("Claude call loop {}", loopCount)
 
             val paramsBuilder = MessageCreateParams.builder()
-                .model(Model.of(modelId))
+                .model(Model.of(if (message.channel == ChannelType.ALEXA) voiceModelId else modelId))
                 .maxTokens(2048L)
                 .system(systemPrompt)
 
@@ -299,7 +321,7 @@ If an image is attached but the message doesn't mention warranties, don't assume
                 val result = try {
                     if (!ToolPolicy.allowed(message.toolProfile, toolName, arguments)) {
                         log.warn("Blocked tool '{}' in {} turn", toolName, message.toolProfile)
-                        ToolPolicy.DENIED
+                        ToolPolicy.denied(message.toolProfile)
                     } else {
                         toolRegistry.execute(toolName, arguments)
                     }
@@ -410,10 +432,7 @@ $conversationContext$summaryContext"""
      * from the web UI to act on something that happened in a group chat).
      */
     private fun buildRecentActivityContext(message: IncomingMessage): String {
-        val currentConvId = when {
-            message.conversation != null -> message.conversation.chatId
-            else -> "web-ui-${message.userId}"
-        }
+        val currentConvId = conversationIdFor(message)
 
         val since = java.time.Instant.now().minusSeconds(3600) // last hour
         val recentTurns = conversationStore.loadTurnsSince(since)
@@ -520,7 +539,27 @@ $conversationContext$summaryContext"""
         return "\n\nWhat you know about the people in this conversation:\n$lines"
     }
 
+    private fun conversationIdFor(message: IncomingMessage): String = when {
+        message.conversation != null -> message.conversation.chatId
+        message.alexa != null -> "alexa-${message.alexa.deviceId}"
+        message.channel == ChannelType.EMAIL -> "email-${message.userId}"
+        else -> "web-ui-${message.userId}"
+    }
+
+    private fun voiceSpeaker(alexa: AlexaContext): String =
+        alexa.defaultPerson?.let { "$it (by voice, ${alexa.room ?: "unknown room"} Echo)" }
+            ?: "Someone at the ${alexa.room ?: "unknown room"} Echo"
+
+    private fun voiceContext(alexa: AlexaContext): String = buildString {
+        append("\n\nThis Echo: device_id ${alexa.deviceId}; room: ${alexa.room ?: "UNKNOWN (ask and save it)"}; ")
+        append("usual person: ${alexa.defaultPerson ?: "none set (shared or unknown)"}.")
+    }
+
     private fun deliverAndSave(message: IncomingMessage, conversationId: String, text: String) {
+        if (message.alexa != null && (text.isBlank() || text.trim() == "[NO_RESPONSE]")) {
+            deliverResponse(message, "Okay.")
+            return
+        }
         if (text.trim() == "[NO_RESPONSE]") {
             log.info("Claude chose not to respond in conversation {}", conversationId)
             return
@@ -532,6 +571,22 @@ $conversationContext$summaryContext"""
     }
 
     private fun deliverResponse(message: IncomingMessage, text: String) {
+        message.alexa?.let { alexa ->
+            val speech = speakable(text)
+            val asksBack = speech.trimEnd().endsWith("?")
+            if (bridgarvisClient.ifAvailable?.replyAlexa(alexa.requestId, speech, endSession = !asksBack) == true) {
+                log.info("Alexa answer for {} spoken", alexa.requestId)
+                return
+            }
+            val handle = alexa.fallbackHandle
+            if (handle == null) {
+                log.warn("Alexa answer for {} was too late and there is no iMessage fallback", alexa.requestId)
+                return
+            }
+            val sent = messagingService.sendDirect(ChannelType.IMESSAGE, handle, "🔊 Answer to your Alexa question: $text")
+            log.info("Alexa answer for {} was too late; sent by iMessage (sent={})", alexa.requestId, sent)
+            return
+        }
         message.emailReply?.let { reply ->
             if (text.isNotBlank() && bridgarvisClient.ifAvailable?.sendEmail(listOf(reply.to), reply.subject, text, reply.inReplyTo, reply.references)?.ok == true) {
                 log.info("Email reply to {} sent", reply.to)
@@ -563,6 +618,16 @@ $conversationContext$summaryContext"""
             }
         }
     }
+
+    /** Text for Alexa to speak: markdown and links removed, bounded. */
+    private fun speakable(text: String): String = text
+        .replace(Regex("https?://\\S+"), "")
+        .replace(Regex("[*_`#>|]"), "")
+        .replace(Regex("^\\s*[-•]\\s+", RegexOption.MULTILINE), "")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(6000)
+        .ifBlank { "Okay." }
 
     private fun extractEmailSubject(messageText: String): String {
         val subjectLine = messageText.lines().find { it.startsWith("Subject: ") }

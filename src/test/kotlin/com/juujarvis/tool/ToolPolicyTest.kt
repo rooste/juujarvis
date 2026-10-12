@@ -52,4 +52,27 @@ class ToolPolicyTest {
         assertFalse(ToolPolicy.allowed(ToolProfile.READ_ONLY, "send_message", emptyMap()))
         assertTrue(ToolPolicy.allowed(ToolProfile.FULL, "web_search", emptyMap()))
     }
+
+    @Test
+    fun `voice turns get everyday tools but nothing reaching outside the family`() {
+        fun voice(tool: String, action: String? = null) =
+            ToolPolicy.allowed(ToolProfile.VOICE, tool, if (action != null) mapOf("action" to action) else emptyMap())
+        assertTrue(voice("manage_calendar", "create"))
+        assertTrue(voice("manage_calendar", "delete"))
+        assertTrue(voice("manage_task", "create"))
+        assertTrue(voice("send_message"))
+        assertTrue(voice("web_search"))
+        assertTrue(voice("email", "read_inbox"))
+        assertTrue(voice("alexa_device", "set"))
+        assertTrue(voice("manage_user", "list"))
+        assertFalse(voice("email", "send"))
+        assertFalse(voice("email", "reply_all"))
+        assertFalse(voice("manage_user", "update"))
+        assertFalse(voice("manage_user", "remove"))
+        assertFalse(voice("update_person_profile"))
+        assertFalse(voice("record_forest_transaction"))
+        assertFalse(voice("manage_warranty", "delete"))
+        assertTrue(ToolPolicy.denied(ToolProfile.VOICE).startsWith("Not available by voice"))
+        assertTrue(ToolPolicy.denied(ToolProfile.READ_ONLY).contains("email"))
+    }
 }

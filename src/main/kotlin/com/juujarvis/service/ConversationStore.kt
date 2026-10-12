@@ -15,6 +15,15 @@ data class PersonProfile(
     val updatedAt: Instant
 )
 
+/** An Echo that has talked to Juujarvis: its (skill-specific) device id, room and usual person. */
+data class AlexaDevice(
+    val deviceId: String,
+    val room: String?,
+    val defaultUserId: String?,
+    val firstSeen: Instant,
+    val lastSeen: Instant
+)
+
 data class ConversationTurn(
     val id: Long,
     val conversationId: String,
@@ -200,6 +209,16 @@ class ConversationStore(
                 """.trimIndent())
                 s.execute("CREATE INDEX IF NOT EXISTS idx_warranty_product ON warranty(product_name)")
                 s.execute("CREATE INDEX IF NOT EXISTS idx_warranty_expiry ON warranty(warranty_expiry)")
+
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS alexa_device (
+                        device_id TEXT PRIMARY KEY,
+                        room TEXT,
+                        default_user_id TEXT,
+                        first_seen TEXT NOT NULL,
+                        last_seen TEXT NOT NULL
+                    )
+                """.trimIndent())
 
                 // Migrate: add columns to existing databases
                 try { s.execute("ALTER TABLE family_user ADD COLUMN timezone TEXT") } catch (_: Exception) {}
@@ -783,4 +802,58 @@ class ConversationStore(
     private fun connection() = DriverManager.getConnection(jdbcUrl).also { conn ->
         conn.createStatement().use { it.execute("PRAGMA busy_timeout = 5000") }
     }
+
+    // ---- Alexa devices
+
+    /** Records that [deviceId] was used now and returns what is known about it. */
+    fun touchAlexaDevice(deviceId: String): AlexaDevice {
+        val now = Instant.now().toString()
+        connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT INTO alexa_device (device_id, first_seen, last_seen) VALUES (?, ?, ?) " +
+                    "ON CONFLICT(device_id) DO UPDATE SET last_seen = excluded.last_seen"
+            ).use { stmt ->
+                stmt.setString(1, deviceId)
+                stmt.setString(2, now)
+                stmt.setString(3, now)
+                stmt.executeUpdate()
+            }
+        }
+        return findAlexaDevice(deviceId)!!
+    }
+
+    fun findAlexaDevice(deviceId: String): AlexaDevice? = connection().use { conn ->
+        conn.prepareStatement("SELECT * FROM alexa_device WHERE device_id = ?").use { stmt ->
+            stmt.setString(1, deviceId)
+            val rs = stmt.executeQuery()
+            if (rs.next()) alexaDevice(rs) else null
+        }
+    }
+
+    fun listAlexaDevices(): List<AlexaDevice> = connection().use { conn ->
+        conn.prepareStatement("SELECT * FROM alexa_device ORDER BY last_seen DESC").use { stmt ->
+            val rs = stmt.executeQuery()
+            buildList { while (rs.next()) add(alexaDevice(rs)) }
+        }
+    }
+
+    /** Sets the room and/or usual person; a null argument leaves that field unchanged. False if unknown. */
+    fun updateAlexaDevice(deviceId: String, room: String?, defaultUserId: String?): Boolean = connection().use { conn ->
+        conn.prepareStatement(
+            "UPDATE alexa_device SET room = COALESCE(?, room), default_user_id = COALESCE(?, default_user_id) WHERE device_id = ?"
+        ).use { stmt ->
+            stmt.setString(1, room)
+            stmt.setString(2, defaultUserId)
+            stmt.setString(3, deviceId)
+            stmt.executeUpdate() > 0
+        }
+    }
+
+    private fun alexaDevice(rs: java.sql.ResultSet) = AlexaDevice(
+        deviceId = rs.getString("device_id"),
+        room = rs.getString("room"),
+        defaultUserId = rs.getString("default_user_id"),
+        firstSeen = Instant.parse(rs.getString("first_seen")),
+        lastSeen = Instant.parse(rs.getString("last_seen"))
+    )
 }

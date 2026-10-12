@@ -136,6 +136,32 @@ class BridgarvisClient(
         }
     }
 
+    /**
+     * Answers a waiting Alexa question. True when Alexa speaks it; false when the question has stopped
+     * waiting (too late) or the call failed, so the caller should use another channel.
+     */
+    fun replyAlexa(id: String, speech: String, endSession: Boolean, reprompt: String? = null): Boolean {
+        val body = mapper.writeValueAsString(mapOf("speech" to speech, "endSession" to endSession, "reprompt" to reprompt))
+        return try {
+            val response = http.send(
+                HttpRequest.newBuilder(uri("/api/alexa/$id/reply"))
+                    .header("Content-Type", "application/json")
+                    .timeout(Duration.ofSeconds(5))
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString()
+            )
+            if (response.statusCode() != 200) {
+                log.warn("Bridgarvis Alexa reply failed: HTTP {}", response.statusCode())
+                return false
+            }
+            mapper.readTree(response.body())["delivered"]?.asBoolean() == true
+        } catch (e: Exception) {
+            log.warn("Bridgarvis Alexa reply failed: {}", e.message)
+            false
+        }
+    }
+
     /** Sends an SMS through Bridgarvis. Returns the response body (messageId + status). */
     fun send(to: String, text: String): JsonNode {
         val body = mapper.writeValueAsString(mapOf("to" to to, "text" to text))

@@ -7,7 +7,12 @@ enum class ToolProfile {
     /** Email to the assistant: reads only; changes need confirmation over iMessage. */
     READ_ONLY,
     /** Authenticated school mail: reads plus the school workflow (calendar, tasks, iMessages to family). */
-    SCHOOL
+    SCHOOL,
+    /**
+     * Spoken request through an Echo: someone in the household, but not a verified person. Everyday tools;
+     * nothing that reaches outside the family or changes users, profiles or finances.
+     */
+    VOICE
 }
 
 /**
@@ -35,10 +40,25 @@ object ToolPolicy {
         "send_message" to null,      // only reaches family members and family group chats
     )
 
+    private val voice: Map<String, Set<String>?> = mapOf(
+        "manage_calendar" to null,
+        "email" to setOf("read_inbox", "read_message"),
+        "manage_ideas" to null,
+        "manage_task" to null,
+        "manage_user" to setOf("list"),
+        "manage_warranty" to setOf("search", "list", "view"),
+        "search_confluence" to null,
+        "read_messages" to null,
+        "send_message" to null,      // only reaches family members and family group chats
+        "web_search" to null,
+        "alexa_device" to null,
+    )
+
     private fun rules(profile: ToolProfile): Map<String, Set<String>?>? = when (profile) {
         ToolProfile.FULL -> null
         ToolProfile.READ_ONLY -> readOnly
         ToolProfile.SCHOOL -> school
+        ToolProfile.VOICE -> voice
     }
 
     fun available(profile: ToolProfile, toolName: String): Boolean = rules(profile)?.containsKey(toolName) ?: true
@@ -57,4 +77,10 @@ object ToolPolicy {
     const val DENIED =
         "Not allowed: this turn was triggered by an email, so this action is not available. " +
         "Describe what you would do and ask Dad (or the sender) to confirm by iMessage; do it after they confirm there."
+
+    const val VOICE_DENIED =
+        "Not available by voice: anyone near the Echo could be asking. Say so briefly and offer to do it " +
+        "when they ask by iMessage."
+
+    fun denied(profile: ToolProfile) = if (profile == ToolProfile.VOICE) VOICE_DENIED else DENIED
 }

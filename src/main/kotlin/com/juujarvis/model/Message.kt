@@ -18,6 +18,19 @@ data class EmailReplyContext(
     val references: String?
 )
 
+/**
+ * A spoken request through an Echo (via Bridgarvis). The answer goes back to Alexa as speech; if that is
+ * too late, it is sent by iMessage to [fallbackHandle].
+ */
+data class AlexaContext(
+    val requestId: String,
+    val deviceId: String,
+    val room: String?,
+    val defaultPerson: String?,
+    val personId: String?,
+    val fallbackHandle: String?
+)
+
 data class IncomingMessage(
     val userId: String,
     val channel: ChannelType,
@@ -28,7 +41,9 @@ data class IncomingMessage(
     /** Which tools this turn may use; anything but FULL means the content came from outside. */
     val toolProfile: ToolProfile = ToolProfile.FULL,
     /** Set for email turns that should be answered by email (in the same thread) instead of iMessage. */
-    val emailReply: EmailReplyContext? = null
+    val emailReply: EmailReplyContext? = null,
+    /** Set for Alexa turns: the answer is spoken on the Echo the question came from. */
+    val alexa: AlexaContext? = null
 ) {
     /** Content came from outside the family's trusted channels (email): wrapped and tool-limited. */
     val untrusted: Boolean get() = toolProfile != ToolProfile.FULL

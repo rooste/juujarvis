@@ -5,5 +5,6 @@ enum class ChannelType {
     SIGNAL,
     IMESSAGE,
     EMAIL,
-    SMS
+    SMS,
+    ALEXA
 }
