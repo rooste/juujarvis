@@ -210,6 +210,15 @@ class ConversationStore(
                 s.execute("CREATE INDEX IF NOT EXISTS idx_warranty_product ON warranty(product_name)")
                 s.execute("CREATE INDEX IF NOT EXISTS idx_warranty_expiry ON warranty(warranty_expiry)")
 
+                // SMS consent per phone number, mirrored from Bridgarvis (JOIN / STOP / send refusals)
+                s.execute("""
+                    CREATE TABLE IF NOT EXISTS sms_consent (
+                        number TEXT PRIMARY KEY,
+                        consent TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """.trimIndent())
+
                 s.execute("""
                     CREATE TABLE IF NOT EXISTS alexa_device (
                         device_id TEXT PRIMARY KEY,
@@ -806,6 +815,29 @@ class ConversationStore(
     // ---- Alexa devices
 
     /** Records that [deviceId] was used now and returns what is known about it. */
+    /** OPTED_IN, OPTED_OUT or NOT_OPTED_IN for an E.164 number; null if never seen. */
+    fun smsConsent(number: String): String? = connection().use { conn ->
+        conn.prepareStatement("SELECT consent FROM sms_consent WHERE number = ?").use { stmt ->
+            stmt.setString(1, number)
+            val rs = stmt.executeQuery()
+            if (rs.next()) rs.getString(1) else null
+        }
+    }
+
+    fun setSmsConsent(number: String, consent: String) {
+        connection().use { conn ->
+            conn.prepareStatement(
+                "INSERT INTO sms_consent (number, consent, updated_at) VALUES (?, ?, ?) " +
+                    "ON CONFLICT(number) DO UPDATE SET consent = excluded.consent, updated_at = excluded.updated_at"
+            ).use { stmt ->
+                stmt.setString(1, number)
+                stmt.setString(2, consent)
+                stmt.setString(3, Instant.now().toString())
+                stmt.executeUpdate()
+            }
+        }
+    }
+
     fun touchAlexaDevice(deviceId: String): AlexaDevice {
         val now = Instant.now().toString()
         connection().use { conn ->

@@ -76,6 +76,20 @@ class ToolPolicyTest {
         assertFalse(voice("record_forest_transaction"))
         assertFalse(voice("manage_warranty", "delete"))
         assertTrue(voice("announce_on_echo"))
+        // Confluence: everyone can read; only trusted family chats can write
+        assertTrue(voice("search_confluence", "get_page"))
+        assertFalse(voice("search_confluence", "create_page"))
+        assertFalse(voice("search_confluence", "update_page"))
+        assertFalse(ToolPolicy.allowed(ToolProfile.SMS, "search_confluence", mapOf("action" to "update_page")))
+        assertFalse(allowed("search_confluence", "create_page"))
+        assertTrue(allowed("search_confluence", "search"))
+        assertFalse(ToolPolicy.allowed(ToolProfile.SCHOOL, "search_confluence", mapOf("action" to "update_page")))
+        assertTrue(ToolPolicy.allowed(ToolProfile.FULL, "search_confluence", mapOf("action" to "create_page")))
+        // texts get the same everyday tools as voice, with their own refusal text
+        assertTrue(ToolPolicy.allowed(ToolProfile.SMS, "manage_calendar", mapOf("action" to "create")))
+        assertFalse(ToolPolicy.allowed(ToolProfile.SMS, "email", mapOf("action" to "send")))
+        assertFalse(ToolPolicy.allowed(ToolProfile.SMS, "update_person_profile", emptyMap()))
+        assertTrue(ToolPolicy.denied(ToolProfile.SMS).startsWith("Not available by text message"))
         assertTrue(ToolPolicy.denied(ToolProfile.VOICE).startsWith("Not available by voice"))
         assertTrue(ToolPolicy.denied(ToolProfile.READ_ONLY).contains("email"))
     }

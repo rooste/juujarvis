@@ -32,6 +32,7 @@ dependencies {
 
     // PDF parsing
     implementation("org.apache.pdfbox:pdfbox:3.0.4")
+    implementation("org.jsoup:jsoup:1.23.2")
 
     // Google Calendar API
     implementation("com.google.api-client:google-api-client:2.7.2")

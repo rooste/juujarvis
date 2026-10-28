@@ -11,7 +11,11 @@ juujarvis:
     own-handles: juujarvis@outlook.com
   anthropic:
     api-key: ${ANTHROPIC_API_KEY:}
-    model: claude-sonnet-4-6
+    model: claude-opus-5-5
+  alexa:
+    # Voice turns: the fast model answers simple requests within Alexa's few seconds and hands bigger ones to
+    # juujarvis.alexa.model (default: the main model above), whose answer is spoken when ready
+    fast-model: claude-haiku-4-5-20251001
   confluence:
     base-url: ${CONFLUENCE_BASE_URL:}
     email: ${CONFLUENCE_EMAIL:}

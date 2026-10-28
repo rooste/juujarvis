@@ -26,6 +26,15 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Outcome of an email send: [detail] is the Bridgarvis message id on success, the reason otherwise. */
 data class EmailSendResult(val ok: Boolean, val detail: String)
 
+sealed interface SmsSendResult {
+    data class Sent(val messageId: String) : SmsSendResult
+    /** [code]: opted_out, not_opted_in, rate_limited, invalid_number, send_failed, unreachable, ... */
+    data class Refused(val code: String, val detail: String) : SmsSendResult {
+        /** The number itself can't be texted (as opposed to a temporary failure). */
+        val numberBlocked: Boolean get() = code == "opted_out" || code == "not_opted_in" || code == "invalid_number"
+    }
+}
+
 enum class AlexaReplyResult { SPOKEN, QUEUED, FAILED }
 
 data class BridgarvisStatus(
@@ -195,19 +204,38 @@ class BridgarvisClient(
         }
     }
 
-    /** Sends an SMS through Bridgarvis. Returns the response body (messageId + status). */
-    fun send(to: String, text: String): JsonNode {
-        val body = mapper.writeValueAsString(mapOf("to" to to, "text" to text))
+    /**
+     * Sends an SMS through Bridgarvis. A refusal carries Bridgarvis's code: opted_out / not_opted_in mean
+     * this number must not be texted; anything else is a temporary or delivery problem.
+     */
+    fun sendSms(to: String, text: String): SmsSendResult = try {
         val response = http.send(
             HttpRequest.newBuilder(uri("/api/messages/send"))
                 .header("Content-Type", "application/json")
                 .timeout(Duration.ofSeconds(15))
-                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(mapOf("to" to to, "text" to text))))
                 .build(),
             HttpResponse.BodyHandlers.ofString()
         )
-        check(response.statusCode() == 200) { "Bridgarvis send failed: HTTP ${response.statusCode()}" }
-        return mapper.readTree(response.body())
+        val body = runCatching { mapper.readTree(response.body()) }.getOrNull()
+        if (response.statusCode() == 200) SmsSendResult.Sent(body?.get("messageId")?.asText() ?: "")
+        else SmsSendResult.Refused(body?.get("error")?.asText() ?: "http_${response.statusCode()}", body?.get("detail")?.asText() ?: "")
+    } catch (e: Exception) {
+        log.warn("Bridgarvis SMS send failed: {}", e.message)
+        SmsSendResult.Refused("unreachable", e.message ?: "")
+    }
+
+    /** Bridgarvis's consent records (number → OPTED_IN / OPTED_OUT), or null if unavailable. */
+    fun smsConsent(): Map<String, String>? = try {
+        val response = http.send(
+            HttpRequest.newBuilder(uri("/api/sms/consent")).timeout(Duration.ofSeconds(10)).GET().build(),
+            HttpResponse.BodyHandlers.ofString()
+        )
+        if (response.statusCode() != 200) null
+        else mapper.readTree(response.body()).associate { it["number"].asText() to it["consent"].asText() }
+    } catch (e: Exception) {
+        log.warn("Bridgarvis SMS consent fetch failed: {}", e.message)
+        null
     }
 
     private fun connect() {

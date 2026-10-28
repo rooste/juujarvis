@@ -3,6 +3,8 @@ package com.juujarvis.messaging
 import com.juujarvis.model.ChannelType
 import com.juujarvis.model.ContactInterface
 import com.juujarvis.model.Conversation
+import com.juujarvis.bridgarvis.SmsSendResult
+import com.juujarvis.messaging.sms.SmsProvider
 import com.juujarvis.service.ConversationStore
 import com.juujarvis.service.UserService
 import org.slf4j.LoggerFactory
@@ -29,11 +31,32 @@ class MessagingService(
         val user = userService.getAllUsers().find { it.name.equals(recipientName, ignoreCase = true) }
             ?: return "No user found with name '$recipientName'"
 
-        val contact = user.contacts
-            .firstOrNull { providerMap.containsKey(it.channelType) }
-            ?: return "No supported messaging channel found for ${user.name}"
+        val sms = providerMap[ChannelType.SMS] as? SmsProvider
+        val notes = mutableListOf<String>()
+        // In the user's contact order; numbers known to be opted out of texts are skipped
+        val candidates = user.contacts.filter { providerMap.containsKey(it.channelType) }
+            .filter { contact ->
+                if (contact.channelType != ChannelType.SMS || sms == null || sms.canText(contact.address)) true
+                else { notes += "their number does not accept texts (opted out or never opted in)"; false }
+            }
+        if (candidates.isEmpty()) return "No supported messaging channel found for ${user.name}" +
+            notes.firstOrNull()?.let { " ($it)" }.orEmpty()
 
-        return send(contact, message, user.name)
+        for (contact in candidates) {
+            if (contact.channelType == ChannelType.SMS && sms != null) {
+                when (val result = sms.sendSms(contact.address, message)) {
+                    is SmsSendResult.Sent -> return "Message sent to ${user.name} via SMS"
+                    is SmsSendResult.Refused -> {
+                        notes += if (result.numberBlocked) "SMS not allowed (${result.code}): don't text this number"
+                                 else "SMS failed (${result.code})"
+                        continue
+                    }
+                }
+            }
+            val result = send(contact, message, user.name)
+            return if (notes.isEmpty()) result else "$result (${notes.joinToString("; ")})"
+        }
+        return "Failed to send message to ${user.name}: ${notes.joinToString("; ")}"
     }
 
     /**

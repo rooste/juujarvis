@@ -1,5 +1,6 @@
 package com.juujarvis.service
 
+import com.juujarvis.messaging.sms.PhoneNumbers
 import com.juujarvis.model.*
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
@@ -65,7 +66,13 @@ class UserService(private val conversationStore: ConversationStore) {
     fun findByHandle(address: String): User? =
         users.values.find { user ->
             user.contacts.any { it.address.equals(address, ignoreCase = true) }
-        }
+        } ?: findByPhone(address)
+
+    /** Matches a phone number however it is written ("+1 214…", "(214) …"). */
+    fun findByPhone(number: String): User? {
+        val wanted = PhoneNumbers.normalize(number) ?: return null
+        return users.values.find { user -> user.contacts.any { PhoneNumbers.normalize(it.address) == wanted } }
+    }
 
     fun findByName(name: String): User? =
         users.values.find { it.name.equals(name, ignoreCase = true) }

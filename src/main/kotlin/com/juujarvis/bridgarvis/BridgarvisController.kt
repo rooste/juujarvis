@@ -20,6 +20,6 @@ class BridgarvisController(private val client: BridgarvisClient) {
         val to = request.to?.takeIf { it.isNotBlank() }
         val text = request.text?.takeIf { it.isNotBlank() }
         if (to == null || text == null) return ResponseEntity.badRequest().body(mapOf("error" to "'to' and 'text' are required"))
-        return ResponseEntity.ok(client.send(to, text))
+        return ResponseEntity.ok(client.sendSms(to, text))
     }
 }

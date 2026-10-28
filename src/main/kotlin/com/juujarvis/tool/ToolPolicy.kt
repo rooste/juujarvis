@@ -12,7 +12,12 @@ enum class ToolProfile {
      * Spoken request through an Echo: someone in the household, but not a verified person. Everyday tools;
      * nothing that reaches outside the family or changes users, profiles or finances.
      */
-    VOICE
+    VOICE,
+    /**
+     * Text message from a family member's number. Sender numbers can be spoofed, so the same everyday
+     * tools as voice, nothing that reaches outside the family or changes users, profiles or finances.
+     */
+    SMS
 }
 
 /**
@@ -21,6 +26,9 @@ enum class ToolProfile {
  * delete, change users/profiles, record finances or send email.
  */
 object ToolPolicy {
+    /** Confluence writes (create_page, update_page) are for trusted family chats only. */
+    private val CONFLUENCE_READ = setOf("search", "list_spaces", "list_pages", "get_page", "get_page_source")
+
     /** Tool name → allowed actions, or null when every use of the tool is allowed. */
     private val readOnly: Map<String, Set<String>?> = mapOf(
         "manage_calendar" to setOf("list", "search"),
@@ -29,7 +37,7 @@ object ToolPolicy {
         "manage_task" to setOf("list"),
         "manage_user" to setOf("list"),
         "manage_warranty" to setOf("search", "list", "view"),
-        "search_confluence" to null,
+        "search_confluence" to CONFLUENCE_READ,
         "read_messages" to null,
         "zoom_image" to null,
         "announce_on_echo" to null,  // judgement rules in its description; rate limited
@@ -48,7 +56,7 @@ object ToolPolicy {
         "manage_task" to null,
         "manage_user" to setOf("list"),
         "manage_warranty" to setOf("search", "list", "view"),
-        "search_confluence" to null,
+        "search_confluence" to CONFLUENCE_READ,
         "read_messages" to null,
         "send_message" to null,      // only reaches family members and family group chats
         "web_search" to null,
@@ -60,7 +68,7 @@ object ToolPolicy {
         ToolProfile.FULL -> null
         ToolProfile.READ_ONLY -> readOnly
         ToolProfile.SCHOOL -> school
-        ToolProfile.VOICE -> voice
+        ToolProfile.VOICE, ToolProfile.SMS -> voice
     }
 
     fun available(profile: ToolProfile, toolName: String): Boolean = rules(profile)?.containsKey(toolName) ?: true
@@ -84,5 +92,13 @@ object ToolPolicy {
         "Not available by voice: anyone near the Echo could be asking. Say so briefly and offer to do it " +
         "when they ask by iMessage."
 
-    fun denied(profile: ToolProfile) = if (profile == ToolProfile.VOICE) VOICE_DENIED else DENIED
+    const val SMS_DENIED =
+        "Not available by text message: a text's sender can't be verified. Say so briefly and offer to do it " +
+        "when they ask by iMessage."
+
+    fun denied(profile: ToolProfile) = when (profile) {
+        ToolProfile.VOICE -> VOICE_DENIED
+        ToolProfile.SMS -> SMS_DENIED
+        else -> DENIED
+    }
 }

@@ -1,5 +1,7 @@
 package com.juujarvis.bridgarvis
 
+import com.juujarvis.messaging.sms.PhoneNumbers
+import com.juujarvis.model.SmsContext
 import com.fasterxml.jackson.databind.JsonNode
 import com.juujarvis.messaging.MessagingService
 import com.juujarvis.model.AlexaContext
@@ -29,6 +31,8 @@ import java.time.format.DateTimeFormatter
  *   the model, because anyone can write to that address.
  * - purpose "assistant" (juujarvis@): only from known family members; handed to the assistant as an
  *   untrusted turn (read-only tools) in the sender's iMessage thread, where replies are delivered.
+ * - channel "sms": keyword events (STOP/JOIN/HELP, already answered by AWS) update the number's consent;
+ *   other texts from family numbers are answered by text (SMS tool profile), unknown numbers are ignored.
  * - channel "alexa": a spoken question from an Echo; answered by voice (VOICE tool profile). Questions
  *   older than a minute are dropped: Alexa has long stopped waiting and the asker has moved on.
  */
@@ -48,7 +52,8 @@ class BridgarvisInbox(
     fun handle(message: JsonNode): Boolean {
         val id = message.text("id") ?: return false
         if (message.text("channel") == "alexa") return toAlexa(id, message)
-        if (message.text("channel") != "email") return false   // SMS is not routed yet
+        if (message.text("channel") == "sms") return toSms(id, message)
+        if (message.text("channel") != "email") return false
         return when (message.text("purpose")) {
             "notify" -> notifyOwner(id, message)
             "assistant" -> toAssistant(id, message)
@@ -165,6 +170,56 @@ class BridgarvisInbox(
         ))
         log.info("Alexa question {} handed to the assistant (room {})", id, device.room ?: "unknown")
         return true
+    }
+
+    private fun toSms(id: String, m: JsonNode): Boolean {
+        val from = PhoneNumbers.normalize(m.text("from")) ?: return true
+        val user = userService.findByPhone(from)
+        val who = user?.name ?: "Someone (…${from.takeLast(4)}, not a family number)"
+        if (m.text("purpose") == "keyword") {
+            when (m.path("context").text("keyword")) {
+                "STOP" -> {
+                    conversationStore.setSmsConsent(from, "OPTED_OUT")
+                    notifyOwnerText("📵 $who texted STOP to the Juujarvis number. No more texts go to that number until they text JOIN.")
+                }
+                "JOIN" -> {
+                    conversationStore.setSmsConsent(from, "OPTED_IN")
+                    notifyOwnerText("✅ $who texted JOIN: texts from Juujarvis are on for that number.")
+                }
+                else -> {}   // HELP: AWS has answered it
+            }
+            log.info("SMS keyword {} from …{} recorded", m.path("context").text("keyword"), from.takeLast(4))
+            return true
+        }
+        if (user == null) {
+            log.info("SMS {} from an unknown number ignored", id)
+            return true
+        }
+        val received = m.text("timestamp")?.let { runCatching { Instant.parse(it) }.getOrNull() }
+        val age = received?.let { Duration.between(it, Instant.now()) }
+        val text = buildString {
+            append("[Text message from ${user.name}")
+            if (age != null && age > Duration.ofMinutes(10)) {
+                append(", received ${DateTimeFormatter.ofPattern("MMM d h:mm a").withZone(ZoneId.of("America/Chicago")).format(received)}")
+                append(" (${age.toMinutes()} minutes ago)")
+            }
+            append("]: ")
+            append((m.text("text") ?: "").take(2000))
+        }
+        messageRouter.handleIncoming(IncomingMessage(
+            userId = from,
+            channel = ChannelType.SMS,
+            text = text,
+            toolProfile = ToolProfile.SMS,
+            sms = SmsContext(from, user.contacts.firstOrNull { it.channelType == ChannelType.IMESSAGE }?.address)
+        ))
+        log.info("SMS {} from {} handed to the assistant", id, user.name)
+        return true
+    }
+
+    private fun notifyOwnerText(text: String) {
+        val handle = userService.getUser(notifyUserId)?.contacts?.firstOrNull { it.channelType == ChannelType.IMESSAGE }?.address ?: return
+        messagingService.sendDirect(ChannelType.IMESSAGE, handle, text)
     }
 
     /**

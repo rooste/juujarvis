@@ -31,6 +31,12 @@ data class AlexaContext(
     val fallbackHandle: String?
 )
 
+/** A text message (via Bridgarvis): the answer is texted back to [number], or sent by iMessage if that fails. */
+data class SmsContext(
+    val number: String,
+    val fallbackHandle: String?
+)
+
 data class IncomingMessage(
     val userId: String,
     val channel: ChannelType,
@@ -43,7 +49,9 @@ data class IncomingMessage(
     /** Set for email turns that should be answered by email (in the same thread) instead of iMessage. */
     val emailReply: EmailReplyContext? = null,
     /** Set for Alexa turns: the answer is spoken on the Echo the question came from. */
-    val alexa: AlexaContext? = null
+    val alexa: AlexaContext? = null,
+    /** Set for SMS turns: the answer is texted back. */
+    val sms: SmsContext? = null
 ) {
     /** Content came from outside the family's trusted channels (email): wrapped and tool-limited. */
     val untrusted: Boolean get() = toolProfile != ToolProfile.FULL

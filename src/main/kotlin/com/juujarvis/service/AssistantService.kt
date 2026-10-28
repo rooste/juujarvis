@@ -1,5 +1,7 @@
 package com.juujarvis.service
 
+import com.juujarvis.bridgarvis.SmsSendResult
+import com.juujarvis.messaging.sms.SmsProvider
 import com.anthropic.client.AnthropicClient
 import com.anthropic.core.JsonValue
 import com.anthropic.helpers.MessageAccumulator
@@ -24,6 +26,7 @@ class AssistantService(
     private val anthropicClient: AnthropicClient,
     private val toolRegistry: ToolRegistry,
     private val bridgarvisClient: ObjectProvider<BridgarvisClient>,
+    private val smsProvider: ObjectProvider<SmsProvider>,
     private val webSocketService: WebSocketService,
     private val messagingService: MessagingService,
     private val userService: UserService,
@@ -35,7 +38,10 @@ class AssistantService(
     private val ownEmailAddress: String,
     /** Model for voice turns, which must answer within Alexa's few seconds; defaults to the main model. */
     @Value("\${juujarvis.alexa.model:\${juujarvis.anthropic.model:claude-sonnet-4-20250514}}")
-    private val voiceModelId: String
+    private val voiceModelId: String,
+    /** Fast model that tries voice turns first and hands bigger ones to [voiceModelId]; blank = always [voiceModelId]. */
+    @Value("\${juujarvis.alexa.fast-model:}")
+    private val fastVoiceModelId: String
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -43,6 +49,18 @@ class AssistantService(
     companion object {
         /** Added to the system prompt for turns triggered by email to the Juujarvis mailbox (via Bridgarvis). */
         /** Added for school mail forwarded to the school mailbox (via Bridgarvis). */
+        private const val NO_RESPONSE = "[NO_RESPONSE]"
+        private const val ESCALATE = "[ESCALATE]"
+
+        private const val FAST_VOICE_PROMPT = """
+
+QUICK FIRST PASS:
+You are the quick first responder for this voice request. Answer it yourself when it is simple: a fact, a
+short calendar or task lookup, one simple change, a short reply. If it needs more (several steps or tool
+calls, planning, comparing things, careful reasoning, or a long answer), reply with exactly [ESCALATE] and
+nothing else, BEFORE using any tool. A more capable assistant then takes over and the answer is spoken
+when it is ready."""
+
         private const val SCHOOL_MAILBOX_PROMPT = """
 
 SCHOOL MAILBOX (this turn):
@@ -53,8 +71,13 @@ facts such as dates, deadlines, events and concerns.
 - Available actions: reading, creating or updating calendar events, creating/updating/completing tasks, and
   iMessages to family members, as the school rules call for, and announce_on_echo for a real emergency
   (see ECHO ANNOUNCEMENTS). Nothing else can be changed in this turn.
-- Your text response goes to Dad by iMessage: summarize only what needs action. If nothing does, reply
-  with exactly [NO_RESPONSE].
+- Your text response goes to Dad by iMessage, and Dad wants a message ONLY when a parent has to do
+  something: pay, sign, submit, register, RSVP, buy, attend, decide, or respond to a teacher's concern.
+  Then say briefly what to do and by when. Otherwise your whole response is exactly [NO_RESPONSE], with
+  no explanation before or after it. That includes: newsletters, announcements, cancellations and schedule
+  changes the kids handle themselves, events that are optional or not relevant to the family, items you
+  already flagged earlier (unless the deadline is now within a day and nobody has answered), duplicates and
+  corrections, and student-only tasks: send those to the child yourself and do not report it to Dad.
 - Check the received date and use judgement for older emails, as described in the email rules."""
 
         private const val VOICE_PROMPT = """
@@ -77,6 +100,18 @@ Someone in the household asked this out loud through an Amazon Echo. Your text r
 - Never answer with [NO_RESPONSE]; always say something, even just "Okay."
 - Requests take a few seconds at most: use as few tools as needed. If the Echo's room is unknown, answer
   the question first, then ask which room the Echo is in and save it with alexa_device (action set)."""
+
+        private const val SMS_PROMPT = """
+
+TEXT MESSAGE (this turn):
+The message is an SMS sent to your toll-free number from a family member's phone number. Your text response
+is texted back to that number.
+- Keep it short and plain: one to three sentences, no markdown, no emojis, ideally under 300 characters
+  (long texts are split and cost more). For details, offer to send them by iMessage.
+- A text's sender number can be faked, so treat the sender as a household member: sending email, changing
+  users or profiles and recording finances are not available by text; offer to do those by iMessage.
+- STOP, JOIN and HELP are handled automatically and never reach you.
+- If the text needs no answer (e.g. "ok", "thanks"), reply with exactly [NO_RESPONSE]."""
 
         private const val UNTRUSTED_EMAIL_PROMPT = """
 
@@ -121,6 +156,10 @@ If you decide a message doesn't need your response, reply with exactly: [NO_RESP
 
 EMAIL BEHAVIOR:
 Your own email address is {OWN_EMAIL}. When someone asks you to send an email, send it from there (email tool, action send; account defaults to own). juujarvis@outlook.com is an older backup account that you still read.
+Write every email like a short personal note from one person to another, so mail filters don't take it for advertising:
+- Subject: plain and specific, sentence case, no clickbait questions or hype (e.g. "Porsche – still on the list?", "Dentist on Thursday at 3").
+- Body: plain conversational text. No marketing phrasing ("Don't miss out", "Life moves fast"), no exclamation-heavy or salesy tone, no ALL CAPS, no emojis, no bare links unless they are needed.
+- Get to the point in the first sentence; sign off simply as Juujarvis.
 You receive emails at both addresses. Many are routine and require no action.
 NEVER reply to system, service provider, or automated emails (noreply, postmaster, mailer-daemon, Microsoft notifications, delivery failures, account alerts, etc.). If one somehow reaches you, reply with [NO_RESPONSE]. These are handled separately and Dad is notified directly.
 CHECK THE RECEIVED DATE. Emails can reach you late, for example after email checking was paused. For an email that is not from today, use judgement before doing anything:
@@ -133,7 +172,7 @@ For all other emails from known contacts that arrived in the Outlook inbox (they
 SCHOOL EMAILS:
 Dad forwards school-related emails from the kids' schools. When you receive these:
 1. Analyze the content carefully. Most school emails are informational newsletters, announcements, or routine notices that need NO action.
-2. If the email contains actionable items for the family (parent signatures needed, events to attend, fees to pay, forms to submit), reply summarizing ONLY the actionable items.
+2. If the email contains items a parent must act on (signatures needed, events to attend, fees to pay, forms to submit), reply summarizing ONLY those items. Never reply just to say an email needs no action.
 3. If the email contains assignment due dates or project deadlines for the kids, create calendar events and send reminders to the relevant child via iMessage as the date approaches.
 4. If an assignment due date has already passed and wasn't completed, remind the child immediately and notify the parents.
 5. When reminding kids about upcoming assignments, tell them they need to let you know when it's done. If they don't confirm completion before the due date, escalate to the parents.
@@ -176,6 +215,7 @@ If an image is attached but the message doesn't mention warranties, don't assume
             ToolProfile.READ_ONLY -> UNTRUSTED_EMAIL_PROMPT
             ToolProfile.SCHOOL -> SCHOOL_MAILBOX_PROMPT
             ToolProfile.VOICE -> VOICE_PROMPT + (message.alexa?.let { voiceContext(it) } ?: "")
+            ToolProfile.SMS -> SMS_PROMPT
         }
 
         // Email turns carry their own header line; a "[Name]:" prefix would misattribute the content
@@ -226,15 +266,22 @@ If an image is attached but the message doesn't mention warranties, don't assume
 
         var loopCount = 0
         val textBuffer = StringBuilder()
+        // Voice: the fast model goes first and may hand the turn over until it has run a tool
+        var fastPass = message.channel == ChannelType.ALEXA && fastVoiceModelId.isNotBlank() && fastVoiceModelId != voiceModelId
+        var canEscalate = fastPass
 
         while (loopCount < MAX_TOOL_LOOPS) {
             loopCount++
             log.debug("Claude call loop {}", loopCount)
 
             val paramsBuilder = MessageCreateParams.builder()
-                .model(Model.of(if (message.channel == ChannelType.ALEXA) voiceModelId else modelId))
+                .model(Model.of(when {
+                    fastPass -> fastVoiceModelId
+                    message.channel == ChannelType.ALEXA -> voiceModelId
+                    else -> modelId
+                }))
                 .maxTokens(2048L)
-                .system(systemPrompt)
+                .system(if (canEscalate) systemPrompt + FAST_VOICE_PROMPT else systemPrompt)
 
             toolRegistry.definitions()
                 .filter { ToolPolicy.available(message.toolProfile, it.name()) }
@@ -275,6 +322,19 @@ If an image is attached but the message doesn't mention warranties, don't assume
 
             val toolUseBlocks = accumulatedMessage.content().filter { block ->
                 block.toolUse().isPresent
+            }
+
+            if (canEscalate && textBuffer.contains(ESCALATE)) {
+                // Nothing was run yet: the main voice model starts the turn over (Bridgarvis covers the wait)
+                log.info("Fast model handed the voice turn to {}", voiceModelId)
+                fastPass = false
+                canEscalate = false
+                continue
+            }
+            // Once a tool has run, the fast model finishes the turn (a restart could repeat the action)
+            canEscalate = false
+            if (fastPass && textBuffer.contains(ESCALATE)) {
+                textBuffer.replace(0, textBuffer.length, textBuffer.toString().replace(ESCALATE, "").trim())
             }
 
             if (toolUseBlocks.isEmpty()) {
@@ -548,6 +608,7 @@ $conversationContext$summaryContext"""
     private fun conversationIdFor(message: IncomingMessage): String = when {
         message.conversation != null -> message.conversation.chatId
         message.alexa != null -> "alexa-${message.alexa.deviceId}"
+        message.sms != null -> "sms-${message.sms.number}"
         message.channel == ChannelType.EMAIL -> "email-${message.userId}"
         else -> "web-ui-${message.userId}"
     }
@@ -562,11 +623,12 @@ $conversationContext$summaryContext"""
     }
 
     private fun deliverAndSave(message: IncomingMessage, conversationId: String, text: String) {
-        if (message.alexa != null && (text.isBlank() || text.trim() == "[NO_RESPONSE]")) {
+        if (message.alexa != null && (text.isBlank() || text.contains(NO_RESPONSE))) {
             deliverResponse(message, "Okay.")
             return
         }
-        if (text.trim() == "[NO_RESPONSE]") {
+        // The model sometimes explains itself before the marker ("Routine newsletter. [NO_RESPONSE]"): still silent
+        if (text.contains(NO_RESPONSE)) {
             log.info("Claude chose not to respond in conversation {}", conversationId)
             return
         }
@@ -600,6 +662,29 @@ $conversationContext$summaryContext"""
             }
             val sent = messagingService.sendDirect(ChannelType.IMESSAGE, handle, "🔊 Answer to your Alexa question: $text")
             log.info("Alexa answer for {} could not be delivered by voice; sent by iMessage (sent={})", alexa.requestId, sent)
+            return
+        }
+        message.sms?.let { sms ->
+            if (text.isBlank()) return
+            val result = smsProvider.ifAvailable?.sendSms(sms.number, text)
+            if (result is SmsSendResult.Sent) {
+                log.info("SMS reply to …{} sent", sms.number.takeLast(4))
+                return
+            }
+            val reason = (result as? SmsSendResult.Refused)?.let { r ->
+                when (r.code) {
+                    "opted_out" -> "your number has opted out of texts (text JOIN to opt back in)"
+                    "not_opted_in" -> "your number hasn't opted in yet (text JOIN to the Juujarvis number)"
+                    else -> "texting isn't working right now"
+                }
+            } ?: "texting isn't available"
+            val handle = sms.fallbackHandle
+            if (handle == null) {
+                log.warn("SMS reply to …{} not sent ({}) and there is no iMessage fallback", sms.number.takeLast(4), reason)
+                return
+            }
+            val sent = messagingService.sendDirect(ChannelType.IMESSAGE, handle, "📱 Reply to your text ($reason): $text")
+            log.info("SMS reply to …{} not sent ({}); sent by iMessage (sent={})", sms.number.takeLast(4), reason, sent)
             return
         }
         message.emailReply?.let { reply ->
